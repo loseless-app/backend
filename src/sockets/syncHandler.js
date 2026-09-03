@@ -5,6 +5,7 @@ import {
   updateRoomState,
   serializeRoom,
 } from "../stores/roomStore.js";
+import { parseMediaUrl } from "../utils/urlParser.js";
 
 // Register all WebSocket event handlers for a client connection
 export function registerSyncHandlers(io, socket) {
@@ -90,9 +91,13 @@ export function registerSyncHandlers(io, socket) {
 
       case "change_source":
         if (mediaType) {
+          const parsed = parseMediaUrl(mediaUrl || "");
           stateUpdates = {
             mediaType,
             mediaUrl: mediaUrl || "",
+            mediaProvider: parsed.provider,
+            mediaId: parsed.mediaId,
+            embedUrl: parsed.embedUrl,
             isPlaying: false,
             anchorTime: 0,
             lastStartedAt: now,
