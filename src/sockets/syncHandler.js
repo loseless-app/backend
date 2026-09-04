@@ -89,23 +89,22 @@ export function registerSyncHandlers(io, socket) {
         };
         break;
 
-      case "change_source":
-        if (mediaType) {
-          const parsed = parseMediaUrl(mediaUrl || "");
-          stateUpdates = {
-            mediaType,
-            mediaUrl: mediaUrl || "",
-            mediaProvider: parsed.provider,
-            mediaId: parsed.mediaId,
-            embedUrl: parsed.embedUrl,
-            isPlaying: false,
-            anchorTime: 0,
-            lastStartedAt: now,
-            isBuffering: false,
-            bufferingUser: null,
-          };
-        }
+      case "change_source": {
+        const parsed = parseMediaUrl(mediaUrl || "");
+        stateUpdates = {
+          mediaType: mediaType || parsed.provider || "url",
+          mediaUrl: mediaUrl || "",
+          mediaProvider: parsed.provider,
+          mediaId: parsed.mediaId,
+          embedUrl: parsed.embedUrl,
+          isPlaying: false,
+          anchorTime: 0,
+          lastStartedAt: now,
+          isBuffering: false,
+          bufferingUser: null,
+        };
         break;
+      }
 
       default:
         return;
@@ -118,13 +117,51 @@ export function registerSyncHandlers(io, socket) {
     io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
   });
 
-  // Handle client buffering / stall events
-  socket.on("client:buffering", (payload) => {
+  // Handle live media reactions (e.g. fire, heart, laugh)
+  socket.on("media:reaction", (payload) => {
     const roomId = socket.data.roomId;
-    const username = socket.data.username;
     if (!roomId) return;
 
+    const username = socket.data.username || "Peer";
+    const emoji = payload?.emoji || "🔥";
+
+    io.to(roomId).emit("media:reaction", {
+      emoji,
+      username,
+      timestamp: Date.now(),
+    });
+  });
+
+  // Handle live room chat messages
+  socket.on("chat:message", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+
+    const username = socket.data.username || "Peer";
+    const text = (payload?.text || "").trim();
+
+    if (!text) return;
+
+    const messageObj = {
+      id: Math.random().toString(36).substring(2, 9),
+      username,
+      text,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    io.to(roomId).emit("chat:message", messageObj);
+  });
+
+  // Handle member buffering status change
+  socket.on("media:buffering", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room) return;
+
     const { isBuffering } = payload || {};
+    const username = socket.data.username || "Peer";
 
     const stateUpdates = {
       isBuffering: !!isBuffering,
@@ -132,34 +169,27 @@ export function registerSyncHandlers(io, socket) {
     };
 
     const updatedRoom = updateRoomState(roomId, stateUpdates);
-
-    // Broadcast buffering status to room members
-    io.to(roomId).emit("room:buffering_state", {
-      isBuffering: !!isBuffering,
-      username: isBuffering ? username : null,
-      roomState: serializeRoom(updatedRoom),
-    });
+    io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
   });
 
-  // Handle socket disconnect and cleanup
+  // Handle socket disconnect cleanup
   socket.on("disconnect", () => {
     const roomId = socket.data.roomId;
-    const username = socket.data.username;
+    const socketId = socket.id;
 
     if (!roomId) return;
 
-    const result = removeMemberFromRoom(roomId, socket.id);
-    if (!result) return;
+    const result = removeMemberFromRoom(roomId, socketId);
+    if (!result || result.roomDeleted) return;
 
-    // Notify remaining users and send updated room state
-    if (!result.roomDeleted) {
-      const room = getRoom(roomId);
+    const room = getRoom(roomId);
+    if (room) {
       io.to(roomId).emit("room:user_left", {
-        username,
-        totalUsers: result.remainingMembersCount,
+        socketId,
+        totalUsers: room.members.size,
         members: serializeRoom(room).members,
       });
-
+      // Broadcast updated room state in case host migration occurred
       io.to(roomId).emit("room:state", serializeRoom(room));
     }
   });
