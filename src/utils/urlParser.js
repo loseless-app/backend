@@ -2,7 +2,7 @@
 // Parses raw media URLs and extracts provider, mediaId, and embed metadata
 
 const YOUTUBE_REGEX =
-  /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/;
+  /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=|shorts\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
 
 const TWITCH_CHANNEL_REGEX = /^https?:\/\/(?:www\.)?twitch\.tv\/([a-zA-Z0-9_]{4,25})\/?$/;
 const TWITCH_VIDEO_REGEX = /^https?:\/\/(?:www\.)?twitch\.tv\/videos\/(\d+)\/?$/;
@@ -31,10 +31,15 @@ export function parseMediaUrl(rawUrl) {
   const ytMatch = trimmedUrl.match(YOUTUBE_REGEX);
   if (ytMatch && ytMatch[1]) {
     const videoId = ytMatch[1];
+    const timeMatch = trimmedUrl.match(/[?&]t=([0-9a-zA-Z]+)/);
+    const timeParam = timeMatch ? `&t=${timeMatch[1]}` : "";
+    const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}${timeParam}`;
+
     return {
       isValid: true,
       provider: "youtube",
       mediaId: videoId,
+      canonicalUrl,
       embedUrl: `https://www.youtube.com/embed/${videoId}?enablejsapi=1`,
       rawUrl: trimmedUrl,
     };

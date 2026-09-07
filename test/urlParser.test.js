@@ -4,13 +4,42 @@ console.log("Running Universal URL Parser Unit Tests...\n");
 
 // 1. YouTube Tests
 const yt1 = parseMediaUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-console.assert(yt1.isValid && yt1.provider === "youtube" && yt1.mediaId === "dQw4w9WgXcQ", "YouTube Standard Failed");
+console.assert(
+  yt1.isValid && yt1.provider === "youtube" && yt1.mediaId === "dQw4w9WgXcQ" && yt1.canonicalUrl === "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "YouTube Standard Failed"
+);
 
 const yt2 = parseMediaUrl("https://youtu.be/dQw4w9WgXcQ");
-console.assert(yt2.isValid && yt2.provider === "youtube" && yt2.mediaId === "dQw4w9WgXcQ", "YouTube Shortened Failed");
+console.assert(
+  yt2.isValid && yt2.provider === "youtube" && yt2.mediaId === "dQw4w9WgXcQ" && yt2.canonicalUrl === "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "YouTube Shortened Failed"
+);
+
+// YouTube share link with tracking param ?si=...
+const ytShare = parseMediaUrl("https://youtu.be/dQw4w9WgXcQ?si=7qB_m7xZ-xyz");
+console.assert(
+  ytShare.isValid && ytShare.provider === "youtube" && ytShare.mediaId === "dQw4w9WgXcQ" && ytShare.canonicalUrl === "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "YouTube Share with Tracking Failed"
+);
+
+// YouTube share link with timestamp ?t=45
+const ytTime = parseMediaUrl("https://youtu.be/dQw4w9WgXcQ?t=45");
+console.assert(
+  ytTime.isValid && ytTime.canonicalUrl === "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=45",
+  "YouTube Shortened Timestamp Failed"
+);
 
 const yt3 = parseMediaUrl("https://www.youtube.com/shorts/abcdefghijk");
-console.assert(yt3.isValid && yt3.provider === "youtube" && yt3.mediaId === "abcdefghijk", "YouTube Shorts Failed");
+console.assert(
+  yt3.isValid && yt3.provider === "youtube" && yt3.mediaId === "abcdefghijk" && yt3.canonicalUrl === "https://www.youtube.com/watch?v=abcdefghijk",
+  "YouTube Shorts Failed"
+);
+
+const yt4 = parseMediaUrl("https://www.youtube.com/live/abcdefghijk");
+console.assert(
+  yt4.isValid && yt4.provider === "youtube" && yt4.mediaId === "abcdefghijk" && yt4.canonicalUrl === "https://www.youtube.com/watch?v=abcdefghijk",
+  "YouTube Live Failed"
+);
 
 // 2. Twitch Tests
 const tw1 = parseMediaUrl("https://www.twitch.tv/shroud");

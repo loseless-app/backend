@@ -93,7 +93,7 @@ export function registerSyncHandlers(io, socket) {
         const parsed = parseMediaUrl(mediaUrl || "");
         stateUpdates = {
           mediaType: mediaType || parsed.provider || "url",
-          mediaUrl: mediaUrl || "",
+          mediaUrl: parsed.canonicalUrl || mediaUrl || "",
           mediaProvider: parsed.provider,
           mediaId: parsed.mediaId,
           embedUrl: parsed.embedUrl,
