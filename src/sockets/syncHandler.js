@@ -6,6 +6,7 @@ import {
   serializeRoom,
 } from "../stores/roomStore.js";
 import { parseMediaUrl } from "../utils/urlParser.js";
+import { saveMessage, getRecentMessages } from "../stores/chatStore.js";
 
 // Register all WebSocket event handlers for a client connection
 export function registerSyncHandlers(io, socket) {
@@ -26,7 +27,7 @@ export function registerSyncHandlers(io, socket) {
     if (!roomId || !username) {
       return socket.emit("error", { message: "roomId and username are required." });
     }
-    
+
     // Attach socket to room channel
     socket.join(roomId);
 
@@ -39,6 +40,11 @@ export function registerSyncHandlers(io, socket) {
 
     // Send current room state to joining user
     socket.emit("room:state", serializeRoom(room));
+
+    // Send recent chat history to the joining user (best-effort)
+    getRecentMessages(roomId, 50).then((history) => {
+      socket.emit("chat:history", history);
+    });
 
     // Broadcast user joined event to other room members
     socket.to(roomId).emit("room:user_joined", {
@@ -148,6 +154,9 @@ export function registerSyncHandlers(io, socket) {
       text,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
+
+    // Persist to MongoDB (best-effort: real-time chat must not depend on DB)
+    saveMessage(roomId, username, text);
 
     io.to(roomId).emit("chat:message", messageObj);
   });

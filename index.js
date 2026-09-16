@@ -1,7 +1,7 @@
 import http from "http";
 import dotenv from "dotenv";
 import { createApp } from "./src/app.js";
-import { initializeSockets } from "./src/sockets/index.js";
+import { initializeSockets } from "./src/sockets/socket.js";
 
 // Load environment variables from .env file
 dotenv.config();
