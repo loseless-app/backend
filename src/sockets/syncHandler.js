@@ -52,6 +52,16 @@ export function registerSyncHandlers(io, socket) {
       totalUsers: room.members.size,
       members: serializeRoom(room).members,
     });
+
+    // Broadcast system chat notification for user joined
+    socket.to(roomId).emit("chat:message", {
+      id: `sys-join-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      type: "system",
+      systemType: "user_joined",
+      username: member.username,
+      text: `${member.username} joined the room`,
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    });
   });
 
   // Handle media actions: play, pause, seek, change_source
@@ -188,6 +198,7 @@ export function registerSyncHandlers(io, socket) {
 
     if (!roomId) return;
 
+    const username = socket.data.username;
     const result = removeMemberFromRoom(roomId, socketId);
     if (!result || result.roomDeleted) return;
 
@@ -195,9 +206,22 @@ export function registerSyncHandlers(io, socket) {
     if (room) {
       io.to(roomId).emit("room:user_left", {
         socketId,
+        username,
         totalUsers: room.members.size,
         members: serializeRoom(room).members,
       });
+
+      if (username) {
+        socket.to(roomId).emit("chat:message", {
+          id: `sys-leave-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          type: "system",
+          systemType: "user_left",
+          username,
+          text: `${username} left the room`,
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        });
+      }
+
       // Broadcast updated room state in case host migration occurred
       io.to(roomId).emit("room:state", serializeRoom(room));
     }
