@@ -2,7 +2,7 @@
 const rooms = new Map();
 
 // Creates initial RoomState structure for new rooms
-function createRoomState(roomId, mediaType = "url", mediaUrl = "") {
+function createRoomState(roomId, mediaType = "url", mediaUrl = "", mediaMetadata = null) {
   return {
     roomId,
     mediaType,
@@ -10,6 +10,7 @@ function createRoomState(roomId, mediaType = "url", mediaUrl = "") {
     mediaProvider: "direct", // "youtube" | "twitch" | "direct"
     mediaId: null,
     embedUrl: mediaUrl,
+    mediaMetadata,
     isPlaying: false,
     anchorTime: 0,
     lastStartedAt: 0,
@@ -20,9 +21,9 @@ function createRoomState(roomId, mediaType = "url", mediaUrl = "") {
 }
 
 // Retrieves room from RAM or creates a new one
-export function getOrCreateRoom(roomId, mediaType = "url", mediaUrl = "") {
+export function getOrCreateRoom(roomId, mediaType = "url", mediaUrl = "", mediaMetadata = null) {
   if (!rooms.has(roomId)) {
-    const newRoom = createRoomState(roomId, mediaType, mediaUrl);
+    const newRoom = createRoomState(roomId, mediaType, mediaUrl, mediaMetadata);
     rooms.set(roomId, newRoom);
   }
   return rooms.get(roomId);
@@ -95,6 +96,7 @@ export function serializeRoom(room) {
     mediaProvider: room.mediaProvider,
     mediaId: room.mediaId,
     embedUrl: room.embedUrl,
+    mediaMetadata: room.mediaMetadata || null,
     isPlaying: room.isPlaying,
     anchorTime: room.anchorTime,
     lastStartedAt: room.lastStartedAt,
