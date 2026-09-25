@@ -72,7 +72,7 @@ export function registerSyncHandlers(io, socket) {
     const room = getRoom(roomId);
     if (!room) return;
 
-    const { action, position = 0, mediaType, mediaUrl } = payload || {};
+    const { action, position = 0, mediaType, mediaUrl, mediaMetadata } = payload || {};
     const now = Date.now();
 
     let stateUpdates = {};
@@ -102,23 +102,42 @@ export function registerSyncHandlers(io, socket) {
         stateUpdates = {
           anchorTime: position,
           lastStartedAt: now,
+          isBuffering: false,
+          bufferingUser: null,
         };
         break;
 
       case "change_source": {
-        const parsed = parseMediaUrl(mediaUrl || "");
-        stateUpdates = {
-          mediaType: mediaType || parsed.provider || "url",
-          mediaUrl: parsed.canonicalUrl || mediaUrl || "",
-          mediaProvider: parsed.provider,
-          mediaId: parsed.mediaId,
-          embedUrl: parsed.embedUrl,
-          isPlaying: false,
-          anchorTime: 0,
-          lastStartedAt: now,
-          isBuffering: false,
-          bufferingUser: null,
-        };
+        if (mediaType === "file") {
+          stateUpdates = {
+            mediaType: "file",
+            mediaUrl: null, // Critical: never broadcast client-private blob URLs
+            mediaProvider: "file",
+            mediaId: mediaMetadata?.fileName || "local_file",
+            embedUrl: null,
+            mediaMetadata: mediaMetadata || null,
+            isPlaying: false,
+            anchorTime: 0,
+            lastStartedAt: now,
+            isBuffering: false,
+            bufferingUser: null,
+          };
+        } else {
+          const parsed = parseMediaUrl(mediaUrl || "");
+          stateUpdates = {
+            mediaType: mediaType || parsed.provider || "url",
+            mediaUrl: parsed.canonicalUrl || mediaUrl || "",
+            mediaProvider: parsed.provider,
+            mediaId: parsed.mediaId,
+            embedUrl: parsed.embedUrl,
+            mediaMetadata: null, // Reset file metadata when switching to URL mode
+            isPlaying: false,
+            anchorTime: 0,
+            lastStartedAt: now,
+            isBuffering: false,
+            bufferingUser: null,
+          };
+        }
         break;
       }
 
@@ -177,7 +196,7 @@ export function registerSyncHandlers(io, socket) {
     if (!roomId) return;
 
     const room = getRoom(roomId);
-    if (!room) return;
+    if (!room || room.mediaType === "file") return;
 
     const { isBuffering } = payload || {};
     const username = socket.data.username || "Peer";
