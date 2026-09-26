@@ -58,6 +58,21 @@ export function addMemberToRoom(roomId, socketId, username) {
   return { room, member };
 }
 
+// Re-associates a reconnecting member with a new socketId while preserving host status
+export function reconnectMember(roomId, oldSocketId, newSocketId) {
+  const room = getRoom(roomId);
+  if (!room) return null;
+
+  const member = room.members.get(oldSocketId);
+  if (!member) return null;
+
+  room.members.delete(oldSocketId);
+  member.socketId = newSocketId;
+  room.members.set(newSocketId, member);
+
+  return { room, member };
+}
+
 // Removes member socket on disconnect/leave
 // Handles host migration & purges room from RAM if empty
 export function removeMemberFromRoom(roomId, socketId) {
@@ -65,6 +80,8 @@ export function removeMemberFromRoom(roomId, socketId) {
   if (!room) return null;
 
   const leavingMember = room.members.get(socketId);
+  if (!leavingMember) return null;
+
   room.members.delete(socketId);
 
   // Purge empty room from RAM to prevent memory leaks

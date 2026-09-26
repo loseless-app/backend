@@ -1,12 +1,17 @@
 import {
   getRoom,
   addMemberToRoom,
+  reconnectMember,
   removeMemberFromRoom,
   updateRoomState,
   serializeRoom,
 } from "../stores/roomStore.js";
 import { parseMediaUrl } from "../utils/urlParser.js";
 import { saveMessage, getRecentMessages } from "../stores/chatStore.js";
+
+// Tracks disconnect grace periods: Key = `${roomId}:${username}`, Value = { timer, socketId, roomId, username }
+const pendingDisconnects = new Map();
+const RECONNECT_GRACE_PERIOD_MS = 5000;
 
 // Register all WebSocket event handlers for a client connection
 export function registerSyncHandlers(io, socket) {
@@ -34,6 +39,32 @@ export function registerSyncHandlers(io, socket) {
     // Save room and user metadata on socket instance for disconnect cleanup
     socket.data.roomId = roomId;
     socket.data.username = username;
+
+    const disconnectKey = `${roomId}:${username}`;
+    const pending = pendingDisconnects.get(disconnectKey);
+
+    if (pending) {
+      // User reconnected within the 5-second grace period!
+      clearTimeout(pending.timer);
+      pendingDisconnects.delete(disconnectKey);
+
+      const result = reconnectMember(roomId, pending.socketId, socket.id);
+      if (result) {
+        const { room } = result;
+
+        // Send current room state to reconnected user
+        socket.emit("room:state", serializeRoom(room));
+
+        // Send recent chat history
+        getRecentMessages(roomId, 50).then((history) => {
+          socket.emit("chat:history", history);
+        });
+
+        // Broadcast updated room state to sync socket ID / members list without spamming join messages
+        io.to(roomId).emit("room:state", serializeRoom(room));
+        return;
+      }
+    }
 
     // Add user to memory room store
     const { room, member } = addMemberToRoom(roomId, socket.id, username);
@@ -210,28 +241,37 @@ export function registerSyncHandlers(io, socket) {
     io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
   });
 
-  // Handle socket disconnect cleanup
+  // Handle socket disconnect cleanup with 5-second grace period
   socket.on("disconnect", () => {
     const roomId = socket.data.roomId;
     const socketId = socket.id;
-
-    if (!roomId) return;
-
     const username = socket.data.username;
-    const result = removeMemberFromRoom(roomId, socketId);
-    if (!result || result.roomDeleted) return;
 
-    const room = getRoom(roomId);
-    if (room) {
-      io.to(roomId).emit("room:user_left", {
-        socketId,
-        username,
-        totalUsers: room.members.size,
-        members: serializeRoom(room).members,
-      });
+    if (!roomId || !username) return;
 
-      if (username) {
-        socket.to(roomId).emit("chat:message", {
+    const disconnectKey = `${roomId}:${username}`;
+
+    // Clear any previous timer for this user if one existed
+    if (pendingDisconnects.has(disconnectKey)) {
+      clearTimeout(pendingDisconnects.get(disconnectKey).timer);
+    }
+
+    const timer = setTimeout(() => {
+      pendingDisconnects.delete(disconnectKey);
+
+      const result = removeMemberFromRoom(roomId, socketId);
+      if (!result || result.roomDeleted) return;
+
+      const room = getRoom(roomId);
+      if (room) {
+        io.to(roomId).emit("room:user_left", {
+          socketId,
+          username,
+          totalUsers: room.members.size,
+          members: serializeRoom(room).members,
+        });
+
+        io.to(roomId).emit("chat:message", {
           id: `sys-leave-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           type: "system",
           systemType: "user_left",
@@ -239,10 +279,17 @@ export function registerSyncHandlers(io, socket) {
           text: `${username} left the room`,
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         });
-      }
 
-      // Broadcast updated room state in case host migration occurred
-      io.to(roomId).emit("room:state", serializeRoom(room));
-    }
+        // Broadcast updated room state in case host migration occurred
+        io.to(roomId).emit("room:state", serializeRoom(room));
+      }
+    }, RECONNECT_GRACE_PERIOD_MS);
+
+    pendingDisconnects.set(disconnectKey, {
+      timer,
+      socketId,
+      roomId,
+      username,
+    });
   });
 }
