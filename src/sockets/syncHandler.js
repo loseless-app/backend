@@ -5,11 +5,12 @@ import {
   removeMemberFromRoom,
   updateRoomState,
   serializeRoom,
+  disambiguateUsername,
 } from "../stores/roomStore.js";
 import { parseMediaUrl } from "../utils/urlParser.js";
 import { saveMessage, getRecentMessages } from "../stores/chatStore.js";
 
-// Tracks disconnect grace periods: Key = `${roomId}:${username}`, Value = { timer, socketId, roomId, username }
+// Tracks disconnect grace periods: Key = `${roomId}:${sessionId || username}`, Value = { timer, socketId, roomId, username, sessionId }
 const pendingDisconnects = new Map();
 const RECONNECT_GRACE_PERIOD_MS = 5000;
 
@@ -27,7 +28,7 @@ export function registerSyncHandlers(io, socket) {
 
   // Handle room join request
   socket.on("room:join", (payload) => {
-    const { roomId, username } = payload || {};
+    const { roomId, username, sessionId } = payload || {};
 
     if (!roomId || !username) {
       return socket.emit("error", { message: "roomId and username are required." });
@@ -36,11 +37,9 @@ export function registerSyncHandlers(io, socket) {
     // Attach socket to room channel
     socket.join(roomId);
 
-    // Save room and user metadata on socket instance for disconnect cleanup
-    socket.data.roomId = roomId;
-    socket.data.username = username;
-
-    const disconnectKey = `${roomId}:${username}`;
+    // Primary disconnect key: if sessionId is provided, use `${roomId}:${sessionId}`.
+    // Fall back to `${roomId}:${username}` for legacy/un-sessioned clients.
+    const disconnectKey = sessionId ? `${roomId}:${sessionId}` : `${roomId}:${username}`;
     const pending = pendingDisconnects.get(disconnectKey);
 
     if (pending) {
@@ -48,9 +47,22 @@ export function registerSyncHandlers(io, socket) {
       clearTimeout(pending.timer);
       pendingDisconnects.delete(disconnectKey);
 
-      const result = reconnectMember(roomId, pending.socketId, socket.id);
+      const result = reconnectMember(roomId, pending.socketId, socket.id, sessionId);
       if (result) {
-        const { room } = result;
+        const { room, member } = result;
+
+        socket.data.roomId = roomId;
+        socket.data.username = member.username;
+        socket.data.sessionId = sessionId;
+
+        // Acknowledge reconnection to client with their established username
+        socket.emit("room:joined", {
+          roomId,
+          username: member.username,
+          sessionId: member.sessionId,
+          isHost: member.isHost,
+          isReconnect: true,
+        });
 
         // Send current room state to reconnected user
         socket.emit("room:state", serializeRoom(room));
@@ -66,8 +78,40 @@ export function registerSyncHandlers(io, socket) {
       }
     }
 
+    // Check if socket is already in this room (idempotent re-join)
+    const existingRoom = getRoom(roomId);
+    if (existingRoom && existingRoom.members.has(socket.id)) {
+      const existingMember = existingRoom.members.get(socket.id);
+      socket.emit("room:joined", {
+        roomId,
+        username: existingMember.username,
+        sessionId: existingMember.sessionId,
+        isHost: existingMember.isHost,
+        isReconnect: true,
+      });
+      socket.emit("room:state", serializeRoom(existingRoom));
+      return;
+    }
+
+    // New member join: Auto-disambiguate username if already taken (excluding self)
+    const assignedUsername = disambiguateUsername(roomId, username, sessionId, socket.id, pendingDisconnects);
+
+    // Save room and user metadata on socket instance for disconnect cleanup
+    socket.data.roomId = roomId;
+    socket.data.username = assignedUsername;
+    socket.data.sessionId = sessionId;
+
     // Add user to memory room store
-    const { room, member } = addMemberToRoom(roomId, socket.id, username);
+    const { room, member } = addMemberToRoom(roomId, socket.id, assignedUsername, sessionId);
+
+    // Acknowledge join to client with their assigned username
+    socket.emit("room:joined", {
+      roomId,
+      username: member.username,
+      sessionId: member.sessionId,
+      isHost: member.isHost,
+      isReconnect: false,
+    });
 
     // Send current room state to joining user
     socket.emit("room:state", serializeRoom(room));
@@ -246,12 +290,13 @@ export function registerSyncHandlers(io, socket) {
     const roomId = socket.data.roomId;
     const socketId = socket.id;
     const username = socket.data.username;
+    const sessionId = socket.data.sessionId;
 
     if (!roomId || !username) return;
 
-    const disconnectKey = `${roomId}:${username}`;
+    const disconnectKey = sessionId ? `${roomId}:${sessionId}` : `${roomId}:${username}`;
 
-    // Clear any previous timer for this user if one existed
+    // Clear any previous timer for this user/session if one existed
     if (pendingDisconnects.has(disconnectKey)) {
       clearTimeout(pendingDisconnects.get(disconnectKey).timer);
     }
@@ -290,6 +335,7 @@ export function registerSyncHandlers(io, socket) {
       socketId,
       roomId,
       username,
+      sessionId,
     });
   });
 }

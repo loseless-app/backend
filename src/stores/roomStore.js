@@ -43,14 +43,76 @@ export function updateRoomState(roomId, stateUpdates) {
   return room;
 }
 
+// Resolves duplicate usernames within a room by appending (2), (3), etc.
+// Excludes the caller's own socketId and sessionId to prevent self-collision
+export function disambiguateUsername(
+  roomId,
+  requestedUsername,
+  incomingSessionId = null,
+  incomingSocketId = null,
+  pendingDisconnects = null
+) {
+  const room = getRoom(roomId);
+  const cleanBase = (requestedUsername || "Guest").trim() || "Guest";
+
+  // Gather all taken usernames (active members + pending disconnects in this room, excluding self)
+  const takenLower = new Set();
+
+  if (room && room.members) {
+    for (const member of room.members.values()) {
+      if (!member?.username) continue;
+      // Skip self: if this member is the same socket or same sessionId, it's not a collision
+      if (
+        (incomingSocketId && member.socketId === incomingSocketId) ||
+        (incomingSessionId && member.sessionId === incomingSessionId)
+      ) {
+        continue;
+      }
+      takenLower.add(member.username.trim().toLowerCase());
+    }
+  }
+
+  if (pendingDisconnects) {
+    for (const pending of pendingDisconnects.values()) {
+      if (pending?.roomId !== roomId || !pending?.username) continue;
+      // Skip self if pending is for the same sessionId or socketId
+      if (
+        (incomingSessionId && pending.sessionId === incomingSessionId) ||
+        (incomingSocketId && pending.socketId === incomingSocketId)
+      ) {
+        continue;
+      }
+      takenLower.add(pending.username.trim().toLowerCase());
+    }
+  }
+
+  // If requested name is not taken, use it directly
+  if (!takenLower.has(cleanBase.toLowerCase())) {
+    return cleanBase;
+  }
+
+  // Extract root base without trailing " (N)" to avoid "Name (2) (2)" chaining
+  const baseMatch = cleanBase.match(/^(.*?)(?:\s*\(\d+\))?$/);
+  const rootBase = (baseMatch && baseMatch[1] && baseMatch[1].trim()) ? baseMatch[1].trim() : cleanBase;
+
+  // Otherwise, find the next available suffix: "Name (2)", "Name (3)", ...
+  let counter = 2;
+  while (takenLower.has(`${rootBase.toLowerCase()} (${counter})`)) {
+    counter++;
+  }
+
+  return `${rootBase} (${counter})`;
+}
+
 // Adds user socket to room (first user to join becomes Host)
-export function addMemberToRoom(roomId, socketId, username) {
+export function addMemberToRoom(roomId, socketId, username, sessionId = null) {
   const room = getOrCreateRoom(roomId);
   const isFirstMember = room.members.size === 0;
 
   const member = {
     socketId,
     username,
+    sessionId,
     isHost: isFirstMember,
   };
 
@@ -59,7 +121,7 @@ export function addMemberToRoom(roomId, socketId, username) {
 }
 
 // Re-associates a reconnecting member with a new socketId while preserving host status
-export function reconnectMember(roomId, oldSocketId, newSocketId) {
+export function reconnectMember(roomId, oldSocketId, newSocketId, newSessionId = null) {
   const room = getRoom(roomId);
   if (!room) return null;
 
@@ -68,6 +130,9 @@ export function reconnectMember(roomId, oldSocketId, newSocketId) {
 
   room.members.delete(oldSocketId);
   member.socketId = newSocketId;
+  if (newSessionId) {
+    member.sessionId = newSessionId;
+  }
   room.members.set(newSocketId, member);
 
   return { room, member };
@@ -102,7 +167,7 @@ export function removeMemberFromRoom(roomId, socketId) {
   return { roomDeleted: false, remainingMembersCount: room.members.size };
 }
 
-// Serializes RoomState for WebSocket JSON transmission (converts members Map to Array)
+// Serializes RoomState for WebSocket JSON transmission (converts members Map to Array, omits private sessionId)
 export function serializeRoom(room) {
   if (!room) return null;
 
@@ -119,6 +184,10 @@ export function serializeRoom(room) {
     lastStartedAt: room.lastStartedAt,
     isBuffering: room.isBuffering,
     bufferingUser: room.bufferingUser,
-    members: Array.from(room.members.values()),
+    members: Array.from(room.members.values()).map(({ socketId, username, isHost }) => ({
+      socketId,
+      username,
+      isHost,
+    })),
   };
 }
