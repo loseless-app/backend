@@ -285,7 +285,62 @@ export function registerSyncHandlers(io, socket) {
     io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
   });
 
-  // Handle socket disconnect cleanup with 5-second grace period
+  // Helper to evict member, announce departure, and broadcast updated room state
+  const handleUserDeparture = (roomId, socketId, username) => {
+    const result = removeMemberFromRoom(roomId, socketId);
+    if (!result || result.roomDeleted) return;
+
+    const room = getRoom(roomId);
+    if (room) {
+      io.to(roomId).emit("room:user_left", {
+        socketId,
+        username,
+        totalUsers: room.members.size,
+        members: serializeRoom(room).members,
+      });
+
+      io.to(roomId).emit("chat:message", {
+        id: `sys-leave-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        type: "system",
+        systemType: "user_left",
+        username,
+        text: `${username} left the room`,
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      });
+
+      // Broadcast updated room state in case host migration occurred
+      io.to(roomId).emit("room:state", serializeRoom(room));
+    }
+  };
+
+  // Handle explicit intentional leave (e.g. user clicked "Leave Room") - Instant 0s departure
+  socket.on("room:leave", () => {
+    const roomId = socket.data.roomId;
+    const socketId = socket.id;
+    const username = socket.data.username;
+    const sessionId = socket.data.sessionId;
+
+    if (!roomId || !username) return;
+
+    const disconnectKey = sessionId ? `${roomId}:${sessionId}` : `${roomId}:${username}`;
+
+    // Cancel any pending disconnect timer
+    if (pendingDisconnects.has(disconnectKey)) {
+      clearTimeout(pendingDisconnects.get(disconnectKey).timer);
+      pendingDisconnects.delete(disconnectKey);
+    }
+
+    // Detach socket from room metadata and room channel
+    socket.leave(roomId);
+    socket.data.roomId = null;
+    socket.data.username = null;
+    socket.data.sessionId = null;
+
+    // Immediately evict and notify peers without delay
+    handleUserDeparture(roomId, socketId, username);
+  });
+
+  // Handle socket disconnect cleanup with 5-second grace period for refreshes/drops
   socket.on("disconnect", () => {
     const roomId = socket.data.roomId;
     const socketId = socket.id;
@@ -303,31 +358,7 @@ export function registerSyncHandlers(io, socket) {
 
     const timer = setTimeout(() => {
       pendingDisconnects.delete(disconnectKey);
-
-      const result = removeMemberFromRoom(roomId, socketId);
-      if (!result || result.roomDeleted) return;
-
-      const room = getRoom(roomId);
-      if (room) {
-        io.to(roomId).emit("room:user_left", {
-          socketId,
-          username,
-          totalUsers: room.members.size,
-          members: serializeRoom(room).members,
-        });
-
-        io.to(roomId).emit("chat:message", {
-          id: `sys-leave-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          type: "system",
-          systemType: "user_left",
-          username,
-          text: `${username} left the room`,
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        });
-
-        // Broadcast updated room state in case host migration occurred
-        io.to(roomId).emit("room:state", serializeRoom(room));
-      }
+      handleUserDeparture(roomId, socketId, username);
     }, RECONNECT_GRACE_PERIOD_MS);
 
     pendingDisconnects.set(disconnectKey, {
