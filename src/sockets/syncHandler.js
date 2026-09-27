@@ -93,6 +93,84 @@ export function registerSyncHandlers(io, socket) {
       return;
     }
 
+    // Check if another active tab already holds this sessionId (Multi-tab takeover)
+    if (existingRoom && sessionId) {
+      let displacedSocketId = null;
+      let displacedMember = null;
+
+      for (const [memberSocketId, member] of existingRoom.members.entries()) {
+        if (memberSocketId !== socket.id && member.sessionId === sessionId) {
+          displacedSocketId = memberSocketId;
+          displacedMember = member;
+          break;
+        }
+      }
+
+      if (displacedSocketId && displacedMember) {
+        // If room is actively playing, cleanly pause it at current timestamp so the new tab takes over without autoplay rejection
+        if (existingRoom.isPlaying) {
+          const now = Date.now();
+          const elapsed = existingRoom.lastStartedAt > 0 ? (now - existingRoom.lastStartedAt) / 1000 : 0;
+          const currentPosition = (existingRoom.anchorTime || 0) + elapsed;
+
+          updateRoomState(roomId, {
+            isPlaying: false,
+            anchorTime: currentPosition,
+            lastStartedAt: now,
+            isBuffering: false,
+            bufferingUser: null,
+          });
+        }
+
+        // Detach old socket from room channel so it stops receiving sync broadcasts
+        const oldSocket = io.sockets.sockets.get(displacedSocketId);
+        if (oldSocket) {
+          // Direct socket emit guarantees delivery to the specific displaced tab
+          oldSocket.emit("session:displaced", {
+            roomId,
+            message: "Room is active in another tab.",
+          });
+          oldSocket.leave(roomId);
+          oldSocket.data.roomId = null;
+          oldSocket.data.username = null;
+          oldSocket.data.sessionId = null;
+        } else {
+          io.to(displacedSocketId).emit("session:displaced", {
+            roomId,
+            message: "Room is active in another tab.",
+          });
+        }
+
+        // Reconnect this socket to inherit the member's name and host status
+        const result = reconnectMember(roomId, displacedSocketId, socket.id, sessionId);
+        if (result) {
+          const { room: updatedRoom, member: currentMember } = result;
+
+          socket.data.roomId = roomId;
+          socket.data.username = currentMember.username;
+          socket.data.sessionId = sessionId;
+
+          socket.emit("room:joined", {
+            roomId,
+            username: currentMember.username,
+            sessionId: currentMember.sessionId,
+            isHost: currentMember.isHost,
+            isReconnect: true,
+          });
+
+          socket.emit("room:state", serializeRoom(updatedRoom));
+
+          getRecentMessages(roomId, 50).then((history) => {
+            socket.emit("chat:history", history);
+          });
+
+          // Sync updated socket ID in member list across room without join spam
+          io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
+          return;
+        }
+      }
+    }
+
     // New member join: Auto-disambiguate username if already taken (excluding self)
     const assignedUsername = disambiguateUsername(roomId, username, sessionId, socket.id, pendingDisconnects);
 
