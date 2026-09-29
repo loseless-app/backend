@@ -43,7 +43,29 @@ export function registerSyncHandlers(io, socket) {
     const pending = pendingDisconnects.get(disconnectKey);
     const existingRoom = getRoom(roomId);
 
-    // If joining an existing room, verify that the room actually exists
+    // 1. Idempotent re-join: if socket is already in this room, acknowledge immediately
+    if (existingRoom && existingRoom.members.has(socket.id)) {
+      const existingMember = existingRoom.members.get(socket.id);
+      socket.emit("room:joined", {
+        roomId,
+        username: existingMember.username,
+        sessionId: existingMember.sessionId,
+        isHost: existingMember.isHost,
+        isReconnect: true,
+      });
+      socket.emit("room:state", serializeRoom(existingRoom));
+      if (typeof callback === "function") {
+        callback({
+          success: true,
+          isReconnect: true,
+          username: existingMember.username,
+          sessionId: existingMember.sessionId,
+        });
+      }
+      return;
+    }
+
+    // 2. If joining an existing room, verify that the room actually exists
     if (!isCreating && !existingRoom && !pending) {
       if (typeof callback === "function") {
         return callback({
@@ -58,8 +80,8 @@ export function registerSyncHandlers(io, socket) {
       });
     }
 
-    // If explicitly creating a new room, prevent collision with an existing active room
-    if (isCreating && existingRoom && existingRoom.members.size > 0) {
+    // 3. If explicitly creating a new room, prevent collision with an existing active room (unless it is self)
+    if (isCreating && existingRoom && existingRoom.members.size > 0 && !existingRoom.members.has(socket.id)) {
       if (typeof callback === "function") {
         return callback({
           success: false,
@@ -113,23 +135,6 @@ export function registerSyncHandlers(io, socket) {
         }
         return;
       }
-    }
-
-    // Check if socket is already in this room (idempotent re-join)
-    if (existingRoom && existingRoom.members.has(socket.id)) {
-      const existingMember = existingRoom.members.get(socket.id);
-      socket.emit("room:joined", {
-        roomId,
-        username: existingMember.username,
-        sessionId: existingMember.sessionId,
-        isHost: existingMember.isHost,
-        isReconnect: true,
-      });
-      socket.emit("room:state", serializeRoom(existingRoom));
-      if (typeof callback === "function") {
-        callback({ success: true, isReconnect: true });
-      }
-      return;
     }
 
     // Check if another active tab already holds this sessionId (Multi-tab takeover)
