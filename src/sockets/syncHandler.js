@@ -27,20 +27,76 @@ export function registerSyncHandlers(io, socket) {
   });
 
   // Handle room join request
-  socket.on("room:join", (payload) => {
-    const { roomId, username, sessionId } = payload || {};
+  socket.on("room:join", (payload, callback) => {
+    const { roomId, username, sessionId, isCreating } = payload || {};
 
     if (!roomId || !username) {
+      if (typeof callback === "function") {
+        callback({ success: false, error: "roomId and username are required." });
+      }
       return socket.emit("error", { message: "roomId and username are required." });
     }
-
-    // Attach socket to room channel
-    socket.join(roomId);
 
     // Primary disconnect key: if sessionId is provided, use `${roomId}:${sessionId}`.
     // Fall back to `${roomId}:${username}` for legacy/un-sessioned clients.
     const disconnectKey = sessionId ? `${roomId}:${sessionId}` : `${roomId}:${username}`;
     const pending = pendingDisconnects.get(disconnectKey);
+    const existingRoom = getRoom(roomId);
+
+    // 1. Idempotent re-join: if socket is already in this room, acknowledge immediately
+    if (existingRoom && existingRoom.members.has(socket.id)) {
+      const existingMember = existingRoom.members.get(socket.id);
+      socket.emit("room:joined", {
+        roomId,
+        username: existingMember.username,
+        sessionId: existingMember.sessionId,
+        isHost: existingMember.isHost,
+        isReconnect: true,
+      });
+      socket.emit("room:state", serializeRoom(existingRoom));
+      if (typeof callback === "function") {
+        callback({
+          success: true,
+          isReconnect: true,
+          username: existingMember.username,
+          sessionId: existingMember.sessionId,
+        });
+      }
+      return;
+    }
+
+    // 2. If joining an existing room, verify that the room actually exists
+    if (!isCreating && !existingRoom && !pending) {
+      if (typeof callback === "function") {
+        return callback({
+          success: false,
+          code: "ROOM_NOT_FOUND",
+          error: "Room not found. Please check the room code and try again.",
+        });
+      }
+      return socket.emit("room:error", {
+        code: "ROOM_NOT_FOUND",
+        message: "Room not found. Please check the room code and try again.",
+      });
+    }
+
+    // 3. If explicitly creating a new room, prevent collision with an existing active room (unless it is self)
+    if (isCreating && existingRoom && existingRoom.members.size > 0 && !existingRoom.members.has(socket.id)) {
+      if (typeof callback === "function") {
+        return callback({
+          success: false,
+          code: "ROOM_ALREADY_EXISTS",
+          error: "Room ID collision. Please generate a new room code.",
+        });
+      }
+      return socket.emit("room:error", {
+        code: "ROOM_ALREADY_EXISTS",
+        message: "Room ID collision.",
+      });
+    }
+
+    // Attach socket to room channel
+    socket.join(roomId);
 
     if (pending) {
       // User reconnected within the 5-second grace period!
@@ -74,23 +130,11 @@ export function registerSyncHandlers(io, socket) {
 
         // Broadcast updated room state to sync socket ID / members list without spamming join messages
         io.to(roomId).emit("room:state", serializeRoom(room));
+        if (typeof callback === "function") {
+          callback({ success: true, isReconnect: true });
+        }
         return;
       }
-    }
-
-    // Check if socket is already in this room (idempotent re-join)
-    const existingRoom = getRoom(roomId);
-    if (existingRoom && existingRoom.members.has(socket.id)) {
-      const existingMember = existingRoom.members.get(socket.id);
-      socket.emit("room:joined", {
-        roomId,
-        username: existingMember.username,
-        sessionId: existingMember.sessionId,
-        isHost: existingMember.isHost,
-        isReconnect: true,
-      });
-      socket.emit("room:state", serializeRoom(existingRoom));
-      return;
     }
 
     // Check if another active tab already holds this sessionId (Multi-tab takeover)
@@ -166,6 +210,9 @@ export function registerSyncHandlers(io, socket) {
 
           // Sync updated socket ID in member list across room without join spam
           io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
+          if (typeof callback === "function") {
+            callback({ success: true, isReconnect: true });
+          }
           return;
         }
       }
@@ -215,6 +262,10 @@ export function registerSyncHandlers(io, socket) {
       text: `${member.username} joined the room`,
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     });
+
+    if (typeof callback === "function") {
+      callback({ success: true, isReconnect: false });
+    }
   });
 
   // Handle media actions: play, pause, seek, change_source
