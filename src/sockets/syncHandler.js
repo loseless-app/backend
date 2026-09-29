@@ -131,7 +131,12 @@ export function registerSyncHandlers(io, socket) {
         // Broadcast updated room state to sync socket ID / members list without spamming join messages
         io.to(roomId).emit("room:state", serializeRoom(room));
         if (typeof callback === "function") {
-          callback({ success: true, isReconnect: true });
+          callback({
+            success: true,
+            isReconnect: true,
+            username: member.username,
+            sessionId: member.sessionId,
+          });
         }
         return;
       }
@@ -211,7 +216,12 @@ export function registerSyncHandlers(io, socket) {
           // Sync updated socket ID in member list across room without join spam
           io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
           if (typeof callback === "function") {
-            callback({ success: true, isReconnect: true });
+            callback({
+              success: true,
+              isReconnect: true,
+              username: currentMember.username,
+              sessionId: currentMember.sessionId,
+            });
           }
           return;
         }
@@ -238,8 +248,8 @@ export function registerSyncHandlers(io, socket) {
       isReconnect: false,
     });
 
-    // Send current room state to joining user
-    socket.emit("room:state", serializeRoom(room));
+    // Broadcast updated room state to all members in the room (including joining user)
+    io.to(roomId).emit("room:state", serializeRoom(room));
 
     // Send recent chat history to the joining user (best-effort)
     getRecentMessages(roomId, 50).then((history) => {
@@ -264,7 +274,12 @@ export function registerSyncHandlers(io, socket) {
     });
 
     if (typeof callback === "function") {
-      callback({ success: true, isReconnect: false });
+      callback({
+        success: true,
+        isReconnect: false,
+        username: member.username,
+        sessionId: member.sessionId,
+      });
     }
   });
 
