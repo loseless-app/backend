@@ -429,6 +429,55 @@ export function registerSyncHandlers(io, socket) {
     io.to(roomId).emit("room:state", serializeRoom(updatedRoom));
   });
 
+  // Handle P2P WebRTC signaling relay for direct peer-to-peer file transfer
+  socket.on("p2p:request", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room) return;
+
+    let targetSocketId = payload?.to;
+    if (!targetSocketId) {
+      // Default to the room host if no specific target socket is specified
+      for (const member of room.members.values()) {
+        if (member.isHost) {
+          targetSocketId = member.socketId;
+          break;
+        }
+      }
+    }
+
+    if (!targetSocketId || targetSocketId === socket.id) return;
+
+    io.to(targetSocketId).emit("p2p:request", {
+      from: socket.id,
+      fromUsername: socket.data.username || "Peer",
+      fileName: payload?.fileName,
+      fileSize: payload?.fileSize,
+    });
+  });
+
+  socket.on("p2p:signal", (payload) => {
+    const { to, signal } = payload || {};
+    if (!to || !signal) return;
+
+    io.to(to).emit("p2p:signal", {
+      from: socket.id,
+      signal,
+    });
+  });
+
+  socket.on("p2p:cancel", (payload) => {
+    const { to, reason } = payload || {};
+    if (!to) return;
+
+    io.to(to).emit("p2p:cancel", {
+      from: socket.id,
+      reason: reason || "Transfer cancelled",
+    });
+  });
+
   // Helper to evict member, announce departure, and broadcast updated room state
   const handleUserDeparture = (roomId, socketId, username) => {
     const result = removeMemberFromRoom(roomId, socketId);
