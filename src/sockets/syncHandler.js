@@ -435,7 +435,7 @@ export function registerSyncHandlers(io, socket) {
     if (!roomId) return;
 
     const room = getRoom(roomId);
-    if (!room) return;
+    if (!room || !room.members.has(socket.id)) return;
 
     let targetSocketId = payload?.to;
     if (!targetSocketId) {
@@ -448,7 +448,8 @@ export function registerSyncHandlers(io, socket) {
       }
     }
 
-    if (!targetSocketId || targetSocketId === socket.id) return;
+    // Verify recipient exists, is in the same room, and is not the sender
+    if (!targetSocketId || targetSocketId === socket.id || !room.members.has(targetSocketId)) return;
 
     io.to(targetSocketId).emit("p2p:request", {
       from: socket.id,
@@ -459,8 +460,17 @@ export function registerSyncHandlers(io, socket) {
   });
 
   socket.on("p2p:signal", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || !room.members.has(socket.id)) return;
+
     const { to, signal } = payload || {};
-    if (!to || !signal) return;
+    if (!to || !signal || to === socket.id) return;
+
+    // Verify recipient belongs to the same room
+    if (!room.members.has(to)) return;
 
     io.to(to).emit("p2p:signal", {
       from: socket.id,
@@ -469,8 +479,17 @@ export function registerSyncHandlers(io, socket) {
   });
 
   socket.on("p2p:cancel", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || !room.members.has(socket.id)) return;
+
     const { to, reason } = payload || {};
-    if (!to) return;
+    if (!to || to === socket.id) return;
+
+    // Verify recipient belongs to the same room
+    if (!room.members.has(to)) return;
 
     io.to(to).emit("p2p:cancel", {
       from: socket.id,
