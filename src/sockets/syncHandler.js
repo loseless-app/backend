@@ -7,12 +7,63 @@ import {
   serializeRoom,
   disambiguateUsername,
 } from "../stores/roomStore.js";
+import crypto from "node:crypto";
 import { parseMediaUrl } from "../utils/urlParser.js";
 import { saveMessage, getRecentMessages } from "../stores/chatStore.js";
 
 // Tracks disconnect grace periods: Key = `${roomId}:${sessionId || username}`, Value = { timer, socketId, roomId, username, sessionId }
 const pendingDisconnects = new Map();
 const RECONNECT_GRACE_PERIOD_MS = 5000;
+
+// Tracks authorized active P2P transfers between peers in a room: Key = `${roomId}:${[id1, id2].sort().join(":")}`
+const activeP2PTransfers = new Map();
+
+function getP2PTransferKey(roomId, id1, id2) {
+  const sortedIds = [id1, id2].sort();
+  return `${roomId}:${sortedIds[0]}:${sortedIds[1]}`;
+}
+
+/**
+ * Authorizes a P2P signaling or cancellation action between the caller and a target peer.
+ * Validates:
+ * 1. Caller is attached to an active roomId.
+ * 2. Room exists in the room store and caller is an active member.
+ * 3. Target socketId is valid (non-empty string, trimmed, not self).
+ * 4. Target socket belongs to the same room.
+ * 5. An active, authorized P2P transfer session exists between caller and target.
+ *
+ * @param {object} socket - Caller socket instance
+ * @param {string} targetSocketId - Target socket ID
+ * @returns {{ authorized: boolean, roomId?: string, transferKey?: string, targetSocketId?: string, reason?: string }}
+ */
+function authorizeP2PTransferPeer(socket, targetSocketId) {
+  const roomId = socket?.data?.roomId;
+  if (!roomId) {
+    return { authorized: false, reason: "CALLER_NOT_IN_ROOM" };
+  }
+
+  const room = getRoom(roomId);
+  if (!room || !room.members.has(socket.id)) {
+    return { authorized: false, reason: "CALLER_NOT_ROOM_MEMBER" };
+  }
+
+  if (typeof targetSocketId !== "string" || !targetSocketId.trim() || targetSocketId.trim() === socket.id) {
+    return { authorized: false, reason: "INVALID_TARGET" };
+  }
+
+  const cleanTargetId = targetSocketId.trim();
+
+  if (!room.members.has(cleanTargetId)) {
+    return { authorized: false, reason: "TARGET_NOT_IN_ROOM" };
+  }
+
+  const transferKey = getP2PTransferKey(roomId, socket.id, cleanTargetId);
+  if (!activeP2PTransfers.has(transferKey)) {
+    return { authorized: false, reason: "NO_ACTIVE_TRANSFER" };
+  }
+
+  return { authorized: true, roomId, transferKey, targetSocketId: cleanTargetId };
+}
 
 // Register all WebSocket event handlers for a client connection
 export function registerSyncHandlers(io, socket) {
@@ -106,6 +157,18 @@ export function registerSyncHandlers(io, socket) {
       const result = reconnectMember(roomId, pending.socketId, socket.id, sessionId);
       if (result) {
         const { room, member } = result;
+
+        // Terminate and notify any stale active P2P transfers tied to the previous socketId
+        for (const [key, session] of activeP2PTransfers.entries()) {
+          if (session.roomId === roomId && (session.requester === pending.socketId || session.target === pending.socketId)) {
+            const otherPeer = session.requester === pending.socketId ? session.target : session.requester;
+            io.to(otherPeer).emit("p2p:cancel", {
+              from: pending.socketId,
+              reason: "Peer reconnected with new session",
+            });
+            activeP2PTransfers.delete(key);
+          }
+        }
 
         socket.data.roomId = roomId;
         socket.data.username = member.username;
@@ -437,8 +500,10 @@ export function registerSyncHandlers(io, socket) {
     const room = getRoom(roomId);
     if (!room || !room.members.has(socket.id)) return;
 
-    let targetSocketId = payload?.to;
-    if (!targetSocketId) {
+    if (!payload || typeof payload !== "object") return;
+
+    let targetSocketId = payload.to;
+    if (!targetSocketId || typeof targetSocketId !== "string") {
       // Default to the room host if no specific target socket is specified
       for (const member of room.members.values()) {
         if (member.isHost) {
@@ -451,56 +516,139 @@ export function registerSyncHandlers(io, socket) {
     // Verify recipient exists, is in the same room, and is not the sender
     if (!targetSocketId || targetSocketId === socket.id || !room.members.has(targetSocketId)) return;
 
+    // Register authorized transfer session between requester and target in this room
+    const transferKey = getP2PTransferKey(roomId, socket.id, targetSocketId);
+    activeP2PTransfers.set(transferKey, {
+      roomId,
+      requester: socket.id,
+      target: targetSocketId,
+      createdAt: Date.now(),
+    });
+
+    // Sanitize metadata to prevent leaking excessive or malformed data
+    const safeFileName = typeof payload.fileName === "string" ? payload.fileName.slice(0, 255) : null;
+    const safeFileSize = typeof payload.fileSize === "number" && Number.isSafeInteger(payload.fileSize) && payload.fileSize > 0
+      ? payload.fileSize
+      : null;
+
     io.to(targetSocketId).emit("p2p:request", {
       from: socket.id,
       fromUsername: socket.data.username || "Peer",
-      fileName: payload?.fileName,
-      fileSize: payload?.fileSize,
+      fileName: safeFileName,
+      fileSize: safeFileSize,
     });
   });
 
   socket.on("p2p:signal", (payload) => {
-    const roomId = socket.data.roomId;
-    if (!roomId) return;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
 
-    const room = getRoom(roomId);
-    if (!room || !room.members.has(socket.id)) return;
+    const { to, signal } = payload;
+    if (!signal || typeof signal !== "object") return;
 
-    const { to, signal } = payload || {};
-    if (!to || !signal || to === socket.id) return;
+    // Validate signal structure: must contain either sdp or candidate
+    const hasValidSdp = signal.sdp && typeof signal.sdp === "object" && typeof signal.sdp.type === "string";
+    const hasValidCandidate = signal.candidate && (typeof signal.candidate === "object" || typeof signal.candidate === "string");
+    if (!hasValidSdp && !hasValidCandidate) return;
 
-    // Verify recipient belongs to the same room
-    if (!room.members.has(to)) return;
+    // Authorize caller, recipient, room membership, and active transfer session
+    const auth = authorizeP2PTransferPeer(socket, to);
+    if (!auth.authorized) {
+      console.warn(`[syncHandler] Unauthorized p2p:signal rejected from ${socket.id} to ${to}: ${auth.reason}`);
+      return;
+    }
 
-    io.to(to).emit("p2p:signal", {
+    io.to(auth.targetSocketId).emit("p2p:signal", {
       from: socket.id,
-      signal,
+      signal: {
+        ...(hasValidSdp ? { sdp: { type: signal.sdp.type, sdp: signal.sdp.sdp } } : {}),
+        ...(hasValidCandidate ? { candidate: signal.candidate } : {}),
+      },
     });
   });
 
   socket.on("p2p:cancel", (payload) => {
-    const roomId = socket.data.roomId;
-    if (!roomId) return;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
 
-    const room = getRoom(roomId);
-    if (!room || !room.members.has(socket.id)) return;
+    const { to, reason } = payload;
 
-    const { to, reason } = payload || {};
-    if (!to || to === socket.id) return;
+    // Authorize caller, recipient, room membership, and active transfer session
+    const auth = authorizeP2PTransferPeer(socket, to);
+    if (!auth.authorized) {
+      console.warn(`[syncHandler] Unauthorized p2p:cancel rejected from ${socket.id} to ${to}: ${auth.reason}`);
+      return;
+    }
 
-    // Verify recipient belongs to the same room
-    if (!room.members.has(to)) return;
+    activeP2PTransfers.delete(auth.transferKey);
 
-    io.to(to).emit("p2p:cancel", {
+    const safeReason = typeof reason === "string" ? reason.slice(0, 200) : "Transfer cancelled";
+
+    io.to(auth.targetSocketId).emit("p2p:cancel", {
       from: socket.id,
-      reason: reason || "Transfer cancelled",
+      reason: safeReason,
+    });
+  });
+
+  // Provide ephemeral TURN/ICE credentials if configured on server (RFC 5766 HMAC-SHA1)
+  socket.on("p2p:get-ice-servers", (callback) => {
+    if (typeof callback !== "function") return;
+
+    const turnSecret = process.env.TURN_SECRET;
+    const turnUrls = process.env.TURN_URLS; // e.g. "turn:turn.example.com:3478?transport=udp"
+
+    if (turnSecret && turnUrls) {
+      const ttlSec = 86400; // 24 hours
+      const timestamp = Math.floor(Date.now() / 1000) + ttlSec;
+      const username = `${timestamp}:${socket.id}`;
+      const hmac = crypto.createHmac("sha1", turnSecret);
+      hmac.update(username);
+      const credential = hmac.digest("base64");
+
+      return callback({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          {
+            urls: turnUrls.split(",").map((u) => u.trim()),
+            username,
+            credential,
+          },
+        ],
+      });
+    }
+
+    // Default to STUN if TURN server is not configured in environment
+    callback({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
     });
   });
 
   // Helper to evict member, announce departure, and broadcast updated room state
   const handleUserDeparture = (roomId, socketId, username) => {
+    // Terminate and notify any active P2P transfers involving the departing socket
+    for (const [key, session] of activeP2PTransfers.entries()) {
+      if (session.roomId === roomId && (session.requester === socketId || session.target === socketId)) {
+        const otherPeer = session.requester === socketId ? session.target : session.requester;
+        io.to(otherPeer).emit("p2p:cancel", {
+          from: socketId,
+          reason: "Peer left the room",
+        });
+        activeP2PTransfers.delete(key);
+      }
+    }
+
     const result = removeMemberFromRoom(roomId, socketId);
-    if (!result || result.roomDeleted) return;
+    if (!result || result.roomDeleted) {
+      // Purge any remaining transfer sessions for this room if room was deleted
+      for (const [key, session] of activeP2PTransfers.entries()) {
+        if (session.roomId === roomId) {
+          activeP2PTransfers.delete(key);
+        }
+      }
+      return;
+    }
 
     const room = getRoom(roomId);
     if (room) {
