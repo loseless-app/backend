@@ -465,6 +465,61 @@ export function registerSyncHandlers(io, socket) {
     });
   });
 
+  // Handle peer offering a different file while a video is playing
+  socket.on("file:announce", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || !room.members.has(socket.id)) return;
+
+    if (!payload || typeof payload !== "object") return;
+
+    const { fileName, fileSize, fileType } = payload;
+    if (!fileName || typeof fileName !== "string") return;
+
+    const safeFileName = fileName.slice(0, 255);
+    const safeFileSize =
+      typeof fileSize === "number" && Number.isSafeInteger(fileSize) && fileSize > 0
+        ? fileSize
+        : null;
+
+    io.to(roomId).emit("file:offered", {
+      senderSocketId: socket.id,
+      senderUsername: socket.data.username || "Peer",
+      fileName: safeFileName,
+      fileSize: safeFileSize,
+      fileType: typeof fileType === "string" ? fileType.slice(0, 100) : "video/mp4",
+      timestamp: Date.now(),
+    });
+  });
+
+  // Handle peer cancelling an offered file
+  socket.on("file:cancel_offer", () => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+    io.to(roomId).emit("file:offer_cancelled", {
+      senderSocketId: socket.id,
+    });
+  });
+
+  // Handle peer declining / rejecting an offered file
+  socket.on("file:reject_offer", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+    const room = getRoom(roomId);
+    if (!room || !room.members.has(socket.id)) return;
+
+    const senderSocketId = payload?.senderSocketId;
+    if (!senderSocketId || !room.members.has(senderSocketId)) return;
+
+    io.to(senderSocketId).emit("file:offer_rejected", {
+      receiverSocketId: socket.id,
+      receiverUsername: socket.data.username || "A member",
+      fileName: typeof payload?.fileName === "string" ? payload.fileName.slice(0, 255) : null,
+    });
+  });
+
   // Handle live room chat messages
   socket.on("chat:message", (payload) => {
     const roomId = socket.data.roomId;
@@ -664,6 +719,8 @@ export function registerSyncHandlers(io, socket) {
         activeP2PTransfers.delete(key);
       }
     }
+
+    io.to(roomId).emit("file:offer_cancelled", { senderSocketId: socketId });
 
     const result = removeMemberFromRoom(roomId, socketId);
     if (!result || result.roomDeleted) {

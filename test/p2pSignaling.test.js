@@ -463,3 +463,56 @@ test("backend: p2p:request falls back to mediaOwnerSocketId when target is stale
   assert.strictEqual(cancelEvent.data.reason, "File sender is not available in the room");
 });
 
+test("backend: file:announce relays file offer to room members and file:cancel_offer cancels it", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-file-announce";
+  getOrCreateRoom(roomId);
+  addMemberToRoom(roomId, "sock-alice", "Alice", true);
+  addMemberToRoom(roomId, "sock-bob", "Bob", false);
+
+  const alice = createSocket("sock-alice", roomId, "Alice");
+  const bob = createSocket("sock-bob", roomId, "Bob");
+
+  alice._trigger("file:announce", {
+    fileName: "sequel.mp4",
+    fileSize: 5000000,
+    fileType: "video/mp4",
+  });
+
+  const roomEvents = emittedEvents.get(roomId) || [];
+  const offerEvent = roomEvents.find((e) => e.event === "file:offered");
+  assert.ok(offerEvent, "Room should receive file:offered event");
+  assert.strictEqual(offerEvent.data.fileName, "sequel.mp4");
+  assert.strictEqual(offerEvent.data.senderUsername, "Alice");
+  assert.strictEqual(offerEvent.data.senderSocketId, "sock-alice");
+
+  // Alice cancels offer
+  alice._trigger("file:cancel_offer");
+  const cancelOfferEvent = roomEvents.find((e) => e.event === "file:offer_cancelled");
+  assert.ok(cancelOfferEvent, "Room should receive file:offer_cancelled event");
+  assert.strictEqual(cancelOfferEvent.data.senderSocketId, "sock-alice");
+});
+
+test("backend: file:reject_offer notifies the offering peer that offer was rejected", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-file-reject";
+  getOrCreateRoom(roomId);
+  addMemberToRoom(roomId, "sock-alice", "Alice", true);
+  addMemberToRoom(roomId, "sock-bob", "Bob", false);
+
+  const alice = createSocket("sock-alice", roomId, "Alice");
+  const bob = createSocket("sock-bob", roomId, "Bob");
+
+  bob._trigger("file:reject_offer", {
+    senderSocketId: "sock-alice",
+    fileName: "sequel.mp4",
+  });
+
+  const aliceEvents = emittedEvents.get("sock-alice") || [];
+  const rejectEvent = aliceEvents.find((e) => e.event === "file:offer_rejected");
+  assert.ok(rejectEvent, "Alice should receive file:offer_rejected event");
+  assert.strictEqual(rejectEvent.data.receiverUsername, "Bob");
+  assert.strictEqual(rejectEvent.data.fileName, "sequel.mp4");
+});
+
+
