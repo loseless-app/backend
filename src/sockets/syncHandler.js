@@ -390,14 +390,28 @@ export function registerSyncHandlers(io, socket) {
         break;
 
       case "change_source": {
+        const ownerSocketId = socket.id;
+        const ownerUsername = socket.data?.username || "Peer";
+
         if (mediaType === "file") {
+          const augmentedMetadata =
+            mediaMetadata && typeof mediaMetadata === "object"
+              ? {
+                  ...mediaMetadata,
+                  ownerSocketId,
+                  ownerUsername,
+                }
+              : null;
+
           stateUpdates = {
             mediaType: "file",
             mediaUrl: null, // Critical: never broadcast client-private blob URLs
             mediaProvider: "file",
             mediaId: mediaMetadata?.fileName || "local_file",
             embedUrl: null,
-            mediaMetadata: mediaMetadata || null,
+            mediaMetadata: augmentedMetadata,
+            mediaOwnerSocketId: ownerSocketId,
+            mediaOwnerUsername: ownerUsername,
             isPlaying: false,
             anchorTime: 0,
             lastStartedAt: now,
@@ -413,6 +427,8 @@ export function registerSyncHandlers(io, socket) {
             mediaId: parsed.mediaId,
             embedUrl: parsed.embedUrl,
             mediaMetadata: null, // Reset file metadata when switching to URL mode
+            mediaOwnerSocketId: ownerSocketId,
+            mediaOwnerUsername: ownerUsername,
             isPlaying: false,
             anchorTime: 0,
             lastStartedAt: now,
@@ -504,11 +520,15 @@ export function registerSyncHandlers(io, socket) {
 
     let targetSocketId = payload.to;
     if (!targetSocketId || typeof targetSocketId !== "string") {
-      // Default to the room host if no specific target socket is specified
-      for (const member of room.members.values()) {
-        if (member.isHost) {
-          targetSocketId = member.socketId;
-          break;
+      // Default to the media owner if present and in the room, otherwise default to the room host
+      if (room.mediaOwnerSocketId && room.members.has(room.mediaOwnerSocketId)) {
+        targetSocketId = room.mediaOwnerSocketId;
+      } else {
+        for (const member of room.members.values()) {
+          if (member.isHost) {
+            targetSocketId = member.socketId;
+            break;
+          }
         }
       }
     }

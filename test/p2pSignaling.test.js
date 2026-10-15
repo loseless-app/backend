@@ -361,3 +361,52 @@ test("backend: user departure cleans up transfers even when the departing user i
   // Verify no crash and room is cleaned up
   assert.strictEqual(emittedEvents.get("sock-single")?.length || 0, 0);
 });
+
+test("backend: guest can share file, setting mediaOwnerSocketId and routing p2p:request without explicit target", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-guest-share";
+  getOrCreateRoom(roomId);
+  addMemberToRoom(roomId, "sock-host", "HostUser", true);
+  addMemberToRoom(roomId, "sock-guest", "GuestUser", false);
+  addMemberToRoom(roomId, "sock-viewer", "ViewerUser", false);
+
+  const host = createSocket("sock-host", roomId, "HostUser");
+  const guest = createSocket("sock-guest", roomId, "GuestUser");
+  const viewer = createSocket("sock-viewer", roomId, "ViewerUser");
+
+  // 1. Guest emits change_source with a local video file
+  guest._trigger("media:action", {
+    action: "change_source",
+    mediaType: "file",
+    mediaMetadata: {
+      fileName: "guest-movie.mp4",
+      fileSize: 52428800,
+      fileType: "video/mp4",
+    },
+  });
+
+  // Verify room:state was broadcast to room with guest as mediaOwner
+  const roomEvents = emittedEvents.get(roomId) || [];
+  const stateEvent = roomEvents.find((e) => e.event === "room:state");
+  assert.ok(stateEvent, "Room state should be broadcast");
+  assert.strictEqual(stateEvent.data.mediaOwnerSocketId, "sock-guest");
+  assert.strictEqual(stateEvent.data.mediaOwnerUsername, "GuestUser");
+  assert.strictEqual(stateEvent.data.mediaMetadata.ownerSocketId, "sock-guest");
+  assert.strictEqual(stateEvent.data.mediaMetadata.fileName, "guest-movie.mp4");
+
+  // 2. Viewer sends p2p:request with omitted `to` field -> must route to sock-guest, NOT sock-host
+  viewer._trigger("p2p:request", {
+    fileName: "guest-movie.mp4",
+    fileSize: 52428800,
+  });
+
+  const guestEvents = emittedEvents.get("sock-guest") || [];
+  const reqEvent = guestEvents.find((e) => e.event === "p2p:request");
+  assert.ok(reqEvent, "Guest should receive p2p:request as the designated mediaOwner");
+  assert.strictEqual(reqEvent.data.from, "sock-viewer");
+
+  // Host should NOT have received the request
+  const hostEvents = emittedEvents.get("sock-host") || [];
+  const hostReq = hostEvents.find((e) => e.event === "p2p:request");
+  assert.strictEqual(hostReq, undefined, "Host should not receive download request for guest's file");
+});
