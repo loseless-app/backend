@@ -519,7 +519,7 @@ export function registerSyncHandlers(io, socket) {
     if (!payload || typeof payload !== "object") return;
 
     let targetSocketId = payload.to;
-    if (!targetSocketId || typeof targetSocketId !== "string") {
+    if (!targetSocketId || typeof targetSocketId !== "string" || !room.members.has(targetSocketId)) {
       // Default to the media owner if present and in the room, otherwise default to the room host
       if (room.mediaOwnerSocketId && room.members.has(room.mediaOwnerSocketId)) {
         targetSocketId = room.mediaOwnerSocketId;
@@ -534,7 +534,13 @@ export function registerSyncHandlers(io, socket) {
     }
 
     // Verify recipient exists, is in the same room, and is not the sender
-    if (!targetSocketId || targetSocketId === socket.id || !room.members.has(targetSocketId)) return;
+    if (!targetSocketId || targetSocketId === socket.id || !room.members.has(targetSocketId)) {
+      socket.emit("p2p:cancel", {
+        from: targetSocketId || "unknown",
+        reason: "File sender is not available in the room",
+      });
+      return;
+    }
 
     // Register authorized transfer session between requester and target in this room
     const transferKey = getP2PTransferKey(roomId, socket.id, targetSocketId);

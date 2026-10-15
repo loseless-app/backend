@@ -410,3 +410,56 @@ test("backend: guest can share file, setting mediaOwnerSocketId and routing p2p:
   const hostReq = hostEvents.find((e) => e.event === "p2p:request");
   assert.strictEqual(hostReq, undefined, "Host should not receive download request for guest's file");
 });
+
+test("backend: p2p:request falls back to mediaOwnerSocketId when target is stale, and cancels if unavailable", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-stale-target";
+  getOrCreateRoom(roomId);
+  addMemberToRoom(roomId, "sock-host", "HostUser", true);
+  addMemberToRoom(roomId, "sock-owner-reconnected", "OwnerUser", false);
+  addMemberToRoom(roomId, "sock-viewer", "ViewerUser", false);
+
+  const owner = createSocket("sock-owner-reconnected", roomId, "OwnerUser");
+  const viewer = createSocket("sock-viewer", roomId, "ViewerUser");
+
+  // Owner sets media
+  owner._trigger("media:action", {
+    action: "change_source",
+    mediaType: "file",
+    mediaMetadata: {
+      fileName: "movie.mp4",
+      fileSize: 1000,
+      fileType: "video/mp4",
+    },
+  });
+
+  // Viewer sends p2p:request with a stale socket id that is no longer in the room
+  viewer._trigger("p2p:request", {
+    to: "sock-stale-offline",
+    fileName: "movie.mp4",
+    fileSize: 1000,
+  });
+
+  const ownerEvents = emittedEvents.get("sock-owner-reconnected") || [];
+  const reqEvent = ownerEvents.find((e) => e.event === "p2p:request");
+  assert.ok(reqEvent, "Should fall back to mediaOwnerSocketId when requested target is not in the room");
+  assert.strictEqual(reqEvent.data.from, "sock-viewer");
+
+  // Viewer alone in a room without sender or host
+  const soloRoomId = "room-solo";
+  getOrCreateRoom(soloRoomId);
+  addMemberToRoom(soloRoomId, "sock-solo", "SoloUser", false);
+  const solo = createSocket("sock-solo", soloRoomId, "SoloUser");
+
+  solo._trigger("p2p:request", {
+    to: "sock-nonexistent",
+    fileName: "movie.mp4",
+    fileSize: 1000,
+  });
+
+  const soloEvents = emittedEvents.get("sock-solo") || [];
+  const cancelEvent = soloEvents.find((e) => e.event === "p2p:cancel");
+  assert.ok(cancelEvent, "Should emit p2p:cancel when file sender is unavailable");
+  assert.strictEqual(cancelEvent.data.reason, "File sender is not available in the room");
+});
+
