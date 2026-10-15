@@ -11,6 +11,8 @@ function createRoomState(roomId, mediaType = "url", mediaUrl = "", mediaMetadata
     mediaId: null,
     embedUrl: mediaUrl,
     mediaMetadata,
+    mediaOwnerSocketId: null,
+    mediaOwnerUsername: null,
     isPlaying: false,
     anchorTime: 0,
     lastStartedAt: 0,
@@ -135,6 +137,13 @@ export function reconnectMember(roomId, oldSocketId, newSocketId, newSessionId =
   }
   room.members.set(newSocketId, member);
 
+  if (room.mediaOwnerSocketId === oldSocketId) {
+    room.mediaOwnerSocketId = newSocketId;
+    if (room.mediaMetadata) {
+      room.mediaMetadata.ownerSocketId = newSocketId;
+    }
+  }
+
   return { room, member };
 }
 
@@ -153,6 +162,14 @@ export function removeMemberFromRoom(roomId, socketId) {
   if (room.members.size === 0) {
     rooms.delete(roomId);
     return { roomDeleted: true };
+  }
+
+  // Clear mediaOwnerSocketId if the file owner left
+  if (room.mediaOwnerSocketId === socketId) {
+    room.mediaOwnerSocketId = null;
+    if (room.mediaMetadata) {
+      room.mediaMetadata.ownerSocketId = null;
+    }
   }
 
   // Delegate host status to next active member if host left
@@ -179,6 +196,8 @@ export function serializeRoom(room) {
     mediaId: room.mediaId,
     embedUrl: room.embedUrl,
     mediaMetadata: room.mediaMetadata || null,
+    mediaOwnerSocketId: room.mediaOwnerSocketId || null,
+    mediaOwnerUsername: room.mediaOwnerUsername || null,
     isPlaying: room.isPlaying,
     anchorTime: room.anchorTime,
     lastStartedAt: room.lastStartedAt,
