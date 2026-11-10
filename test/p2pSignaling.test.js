@@ -30,6 +30,7 @@ function createMockEnvironment() {
       },
       leave: () => {},
       join: () => {},
+      to: (target) => io.to(target),
       _trigger: (event, payload, cb) => {
         if (handlers.has(event)) {
           return handlers.get(event)(payload, cb);
@@ -513,6 +514,39 @@ test("backend: file:reject_offer notifies the offering peer that offer was rejec
   assert.ok(rejectEvent, "Alice should receive file:offer_rejected event");
   assert.strictEqual(rejectEvent.data.receiverUsername, "Bob");
   assert.strictEqual(rejectEvent.data.fileName, "sequel.mp4");
+});
+
+test("backend: late joiner receives active file:offered event upon joining the room", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-file-late-joiner";
+  const room = getOrCreateRoom(roomId);
+  addMemberToRoom(roomId, "sock-alice", "Alice", true);
+
+  const alice = createSocket("sock-alice", roomId, "Alice");
+
+  // Alice offers a file
+  alice._trigger("file:announce", {
+    fileName: "presentation.mp4",
+    fileSize: 15000000,
+    fileType: "video/mp4",
+  });
+
+  assert.ok(room.activeFileOffer, "Room should hold activeFileOffer");
+  assert.strictEqual(room.activeFileOffer.fileName, "presentation.mp4");
+
+  // Charlie joins the room later
+  const charlie = createSocket("sock-charlie", null, null);
+  charlie._trigger("room:join", {
+    roomId,
+    username: "Charlie",
+  });
+
+  const charlieEvents = emittedEvents.get("sock-charlie") || [];
+  const offerEvent = charlieEvents.find((e) => e.event === "file:offered");
+  assert.ok(offerEvent, "Charlie should receive file:offered event on joining");
+  assert.strictEqual(offerEvent.data.fileName, "presentation.mp4");
+  assert.strictEqual(offerEvent.data.senderSocketId, "sock-alice");
+  assert.strictEqual(offerEvent.data.senderUsername, "Alice");
 });
 
 

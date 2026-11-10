@@ -18,6 +18,7 @@ function createRoomState(roomId, mediaType = "url", mediaUrl = "", mediaMetadata
     lastStartedAt: 0,
     isBuffering: false,
     bufferingUser: null,
+    activeFileOffer: null, // Track currently active file offer in room
     members: new Map(), // Key = socketId, Value = { socketId, username, isHost }
   };
 }
@@ -172,6 +173,11 @@ export function removeMemberFromRoom(roomId, socketId) {
     }
   }
 
+  // Clear activeFileOffer if the offering member left
+  if (room.activeFileOffer && room.activeFileOffer.senderSocketId === socketId) {
+    room.activeFileOffer = null;
+  }
+
   // Delegate host status to next active member if host left
   if (leavingMember && leavingMember.isHost) {
     const nextMemberKey = room.members.keys().next().value;
@@ -203,6 +209,7 @@ export function serializeRoom(room) {
     lastStartedAt: room.lastStartedAt,
     isBuffering: room.isBuffering,
     bufferingUser: room.bufferingUser,
+    activeFileOffer: room.activeFileOffer || null,
     members: Array.from(room.members.values()).map(({ socketId, username, isHost }) => ({
       socketId,
       username,

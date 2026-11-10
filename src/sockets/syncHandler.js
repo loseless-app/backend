@@ -193,6 +193,15 @@ export function registerSyncHandlers(io, socket) {
 
         // Broadcast updated room state to sync socket ID / members list without spamming join messages
         io.to(roomId).emit("room:state", serializeRoom(room));
+
+        // Send active file offer to reconnected user if one is currently active
+        if (
+          room.activeFileOffer &&
+          room.members.has(room.activeFileOffer.senderSocketId) &&
+          room.activeFileOffer.senderSocketId !== socket.id
+        ) {
+          socket.emit("file:offered", room.activeFileOffer);
+        }
         if (typeof callback === "function") {
           callback({
             success: true,
@@ -313,6 +322,15 @@ export function registerSyncHandlers(io, socket) {
 
     // Broadcast updated room state to all members in the room (including joining user)
     io.to(roomId).emit("room:state", serializeRoom(room));
+
+    // Send active file offer to joining user if one is currently active
+    if (
+      room.activeFileOffer &&
+      room.members.has(room.activeFileOffer.senderSocketId) &&
+      room.activeFileOffer.senderSocketId !== socket.id
+    ) {
+      socket.emit("file:offered", room.activeFileOffer);
+    }
 
     // Send recent chat history to the joining user (best-effort)
     getRecentMessages(roomId, 50).then((history) => {
@@ -484,20 +502,27 @@ export function registerSyncHandlers(io, socket) {
         ? fileSize
         : null;
 
-    io.to(roomId).emit("file:offered", {
+    const offerPayload = {
       senderSocketId: socket.id,
       senderUsername: socket.data.username || "Peer",
       fileName: safeFileName,
       fileSize: safeFileSize,
       fileType: typeof fileType === "string" ? fileType.slice(0, 100) : "video/mp4",
       timestamp: Date.now(),
-    });
+    };
+
+    room.activeFileOffer = offerPayload;
+    io.to(roomId).emit("file:offered", offerPayload);
   });
 
   // Handle peer cancelling an offered file
   socket.on("file:cancel_offer", () => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
+    const room = getRoom(roomId);
+    if (room && room.activeFileOffer?.senderSocketId === socket.id) {
+      room.activeFileOffer = null;
+    }
     io.to(roomId).emit("file:offer_cancelled", {
       senderSocketId: socket.id,
     });
