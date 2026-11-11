@@ -428,9 +428,32 @@ export function registerSyncHandlers(io, socket) {
             mediaId: mediaMetadata?.fileName || "local_file",
             embedUrl: null,
             mediaMetadata: augmentedMetadata,
+            streamMetadata: null,
             mediaOwnerSocketId: ownerSocketId,
             mediaOwnerUsername: ownerUsername,
             isPlaying: false,
+            anchorTime: 0,
+            lastStartedAt: now,
+            isBuffering: false,
+            bufferingUser: null,
+          };
+        } else if (mediaType === "stream") {
+          stateUpdates = {
+            mediaType: "stream",
+            mediaUrl: null,
+            mediaProvider: "stream",
+            mediaId: mediaMetadata?.title || "live_stream",
+            embedUrl: null,
+            mediaMetadata: null,
+            streamMetadata: {
+              title: mediaMetadata?.title || "Live Stream",
+              source: mediaMetadata?.source || "file",
+              hasAudio: Boolean(mediaMetadata?.hasAudio),
+              qualityMode: mediaMetadata?.qualityMode || "auto",
+            },
+            mediaOwnerSocketId: ownerSocketId,
+            mediaOwnerUsername: ownerUsername,
+            isPlaying: true, // Live streams are actively broadcasting
             anchorTime: 0,
             lastStartedAt: now,
             isBuffering: false,
@@ -445,6 +468,7 @@ export function registerSyncHandlers(io, socket) {
             mediaId: parsed.mediaId,
             embedUrl: parsed.embedUrl,
             mediaMetadata: null, // Reset file metadata when switching to URL mode
+            streamMetadata: null, // Reset stream metadata when switching to URL mode
             mediaOwnerSocketId: ownerSocketId,
             mediaOwnerUsername: ownerUsername,
             isPlaying: false,
@@ -694,6 +718,67 @@ export function registerSyncHandlers(io, socket) {
     });
   });
 
+  // Dedicated WebRTC MediaStream signaling relay for Mode 3a live streaming
+  socket.on("stream:signal", (payload) => {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+
+    const { to, signal } = payload;
+    if (!signal || typeof signal !== "object") return;
+
+    const hasValidSdp = signal.sdp && typeof signal.sdp === "object" && typeof signal.sdp.type === "string";
+    const hasValidCandidate = signal.candidate && (typeof signal.candidate === "object" || typeof signal.candidate === "string");
+    if (!hasValidSdp && !hasValidCandidate) return;
+
+    const roomId = socket.data?.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || !room.members.has(socket.id)) return;
+
+    if (typeof to !== "string" || !to.trim() || to.trim() === socket.id) return;
+    const cleanTargetId = to.trim();
+    if (!room.members.has(cleanTargetId)) return;
+
+    io.to(cleanTargetId).emit("stream:signal", {
+      from: socket.id,
+      signal: {
+        ...(hasValidSdp ? { sdp: { type: signal.sdp.type, sdp: signal.sdp.sdp } } : {}),
+        ...(hasValidCandidate ? { candidate: signal.candidate } : {}),
+      },
+    });
+  });
+
+  // Allows stream broadcaster or host to stop the active live stream
+  socket.on("stream:stop", () => {
+    const roomId = socket.data?.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || !room.members.has(socket.id)) return;
+
+    if (room.mediaType === "stream" && (room.mediaOwnerSocketId === socket.id || socket.data?.isHost)) {
+      updateRoomState(roomId, {
+        mediaType: "url",
+        mediaUrl: "",
+        mediaProvider: "direct",
+        mediaId: null,
+        embedUrl: null,
+        mediaMetadata: null,
+        streamMetadata: null,
+        mediaOwnerSocketId: null,
+        mediaOwnerUsername: null,
+        isPlaying: false,
+        anchorTime: 0,
+        lastStartedAt: Date.now(),
+        isBuffering: false,
+        bufferingUser: null,
+      });
+
+      io.to(roomId).emit("room:sync", serializeRoom(room));
+      io.to(roomId).emit("stream:ended", { by: socket.id, username: socket.data?.username || "Host" });
+    }
+  });
+
   // Provide ephemeral TURN/ICE credentials if configured on server (RFC 5766 HMAC-SHA1)
   socket.on("p2p:get-ice-servers", (callback) => {
     if (typeof callback !== "function") return;
@@ -760,6 +845,26 @@ export function registerSyncHandlers(io, socket) {
 
     const room = getRoom(roomId);
     if (room) {
+      if (room.mediaType === "stream" && room.mediaOwnerSocketId === socketId) {
+        updateRoomState(roomId, {
+          mediaType: "url",
+          mediaUrl: "",
+          mediaProvider: "direct",
+          mediaId: null,
+          embedUrl: null,
+          mediaMetadata: null,
+          streamMetadata: null,
+          mediaOwnerSocketId: null,
+          mediaOwnerUsername: null,
+          isPlaying: false,
+          anchorTime: 0,
+          lastStartedAt: Date.now(),
+          isBuffering: false,
+          bufferingUser: null,
+        });
+        io.to(roomId).emit("stream:ended", { by: socketId, username, reason: "Host left the room" });
+      }
+
       io.to(roomId).emit("room:user_left", {
         socketId,
         username,

@@ -19,6 +19,7 @@ function createRoomState(roomId, mediaType = "url", mediaUrl = "", mediaMetadata
     isBuffering: false,
     bufferingUser: null,
     activeFileOffer: null, // Track currently active file offer in room
+    streamMetadata: null, // Track Mode 3a live stream metadata { title, source, hasAudio, qualityMode }
     members: new Map(), // Key = socketId, Value = { socketId, username, isHost }
   };
 }
@@ -210,6 +211,7 @@ export function serializeRoom(room) {
     isBuffering: room.isBuffering,
     bufferingUser: room.bufferingUser,
     activeFileOffer: room.activeFileOffer || null,
+    streamMetadata: room.streamMetadata || null,
     members: Array.from(room.members.values()).map(({ socketId, username, isHost }) => ({
       socketId,
       username,
