@@ -175,4 +175,68 @@ test("backend: stream:stop resets room state and notifies room peers", () => {
   const endedEvent = roomEvents.find((e) => e.event === "stream:ended");
   assert.ok(endedEvent, "Room should receive stream:ended");
   assert.equal(endedEvent.data.by, host.id);
+
+  // Clients render from room:state, so it must carry the reset payload too.
+  const stateEvents = roomEvents.filter((e) => e.event === "room:state");
+  assert.ok(stateEvents.length > 0, "Room should receive an updated room:state");
+  const latestState = stateEvents[stateEvents.length - 1].data;
+  assert.equal(latestState.mediaType, "url");
+  assert.equal(latestState.streamMetadata, null);
+  assert.equal(latestState.mediaOwnerSocketId, null);
+});
+
+test("backend: stream:signal relays a viewer's request for a fresh offer", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-stream-request-test";
+  getOrCreateRoom(roomId);
+
+  const host = createSocket("sock-request-host", roomId, "Host", true);
+  const viewer = createSocket("sock-request-viewer", roomId, "Viewer", false);
+  addMemberToRoom(roomId, host.id, "Host", true);
+  addMemberToRoom(roomId, viewer.id, "Viewer", false);
+
+  viewer._trigger("stream:signal", {
+    to: host.id,
+    signal: { request: true },
+  });
+
+  const hostEvents = emittedEvents.get(host.id) || [];
+  const requestEvent = hostEvents.find((e) => e.event === "stream:signal");
+  assert.ok(requestEvent, "Host should receive the recovery request");
+  assert.equal(requestEvent.data.from, viewer.id);
+  assert.equal(requestEvent.data.signal.request, true);
+});
+
+test("backend: host leaving the room ends the live stream", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-stream-host-leave-test";
+  getOrCreateRoom(roomId);
+
+  const host = createSocket("sock-leave-host", roomId, "Host", true);
+  const viewer = createSocket("sock-leave-viewer", roomId, "Viewer", false);
+  addMemberToRoom(roomId, host.id, "Host", true);
+  addMemberToRoom(roomId, viewer.id, "Viewer", false);
+
+  host._trigger("media:action", {
+    action: "change_source",
+    mediaType: "stream",
+    mediaMetadata: { title: "Live Movie", source: "file" },
+  });
+  assert.equal(getRoom(roomId).mediaType, "stream");
+
+  host._trigger("room:leave", {});
+
+  const room = getRoom(roomId);
+  assert.ok(room, "Room should survive because the viewer is still present");
+  assert.equal(room.mediaType, "url");
+  assert.equal(room.streamMetadata, null);
+  assert.equal(room.mediaOwnerSocketId, null);
+
+  const roomEvents = emittedEvents.get(roomId) || [];
+  const endedEvent = roomEvents.find((e) => e.event === "stream:ended");
+  assert.ok(endedEvent, "Viewers should be told the host's stream ended");
+  assert.equal(endedEvent.data.reason, "Host left the room");
+
+  const stateEvents = roomEvents.filter((e) => e.event === "room:state");
+  assert.equal(stateEvents[stateEvents.length - 1].data.mediaType, "url");
 });

@@ -727,7 +727,9 @@ export function registerSyncHandlers(io, socket) {
 
     const hasValidSdp = signal.sdp && typeof signal.sdp === "object" && typeof signal.sdp.type === "string";
     const hasValidCandidate = signal.candidate && (typeof signal.candidate === "object" || typeof signal.candidate === "string");
-    if (!hasValidSdp && !hasValidCandidate) return;
+    // Viewers may explicitly ask the broadcaster for a fresh offer.
+    const isRequest = signal.request === true;
+    if (!hasValidSdp && !hasValidCandidate && !isRequest) return;
 
     const roomId = socket.data?.roomId;
     if (!roomId) return;
@@ -742,6 +744,7 @@ export function registerSyncHandlers(io, socket) {
     io.to(cleanTargetId).emit("stream:signal", {
       from: socket.id,
       signal: {
+        ...(isRequest ? { request: true } : {}),
         ...(hasValidSdp ? { sdp: { type: signal.sdp.type, sdp: signal.sdp.sdp } } : {}),
         ...(hasValidCandidate ? { candidate: signal.candidate } : {}),
       },
@@ -756,7 +759,11 @@ export function registerSyncHandlers(io, socket) {
     const room = getRoom(roomId);
     if (!room || !room.members.has(socket.id)) return;
 
-    if (room.mediaType === "stream" && (room.mediaOwnerSocketId === socket.id || socket.data?.isHost)) {
+    // socket.data.isHost is never set; read the authoritative room member record.
+    const member = room.members.get(socket.id);
+    const isHost = Boolean(member?.isHost);
+
+    if (room.mediaType === "stream" && (room.mediaOwnerSocketId === socket.id || isHost)) {
       updateRoomState(roomId, {
         mediaType: "url",
         mediaUrl: "",
@@ -774,7 +781,8 @@ export function registerSyncHandlers(io, socket) {
         bufferingUser: null,
       });
 
-      io.to(roomId).emit("room:sync", serializeRoom(room));
+      // Clients subscribe to room:state — room:sync was silently ignored.
+      io.to(roomId).emit("room:state", serializeRoom(room));
       io.to(roomId).emit("stream:ended", { by: socket.id, username: socket.data?.username || "Host" });
     }
   });
@@ -832,6 +840,14 @@ export function registerSyncHandlers(io, socket) {
 
     io.to(roomId).emit("file:offer_cancelled", { senderSocketId: socketId });
 
+    // Capture this BEFORE removeMemberFromRoom(), which nulls mediaOwnerSocketId.
+    const departingRoom = getRoom(roomId);
+    const wasStreamOwner = Boolean(
+      departingRoom &&
+        departingRoom.mediaType === "stream" &&
+        departingRoom.mediaOwnerSocketId === socketId
+    );
+
     const result = removeMemberFromRoom(roomId, socketId);
     if (!result || result.roomDeleted) {
       // Purge any remaining transfer sessions for this room if room was deleted
@@ -845,7 +861,7 @@ export function registerSyncHandlers(io, socket) {
 
     const room = getRoom(roomId);
     if (room) {
-      if (room.mediaType === "stream" && room.mediaOwnerSocketId === socketId) {
+      if (wasStreamOwner) {
         updateRoomState(roomId, {
           mediaType: "url",
           mediaUrl: "",
