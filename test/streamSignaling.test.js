@@ -191,6 +191,41 @@ test("backend: stream:clock keeps sequence numbers monotonic", () => {
   assert.equal(getRoom(roomId).streamPlayback.anchorTime, 20);
 });
 
+test("backend: stream:clock relays a transient seek cue without persisting it", () => {
+  const { createSocket, emittedEvents } = createMockEnvironment();
+  const roomId = "room-stream-clock-seek-cue-test";
+  getOrCreateRoom(roomId);
+
+  const host = createSocket("sock-cue-host", roomId, "Host", true);
+  addMemberToRoom(roomId, host.id, "Host", true);
+
+  host._trigger("media:action", {
+    action: "change_source",
+    mediaType: "stream",
+    mediaMetadata: { title: "Live Movie", source: "file", duration: 120 },
+  });
+
+  host._trigger("stream:clock", {
+    isPlaying: false,
+    anchorTime: 35,
+    state: "paused",
+    duration: 120,
+    seekDelta: -5,
+  });
+
+  const room = getRoom(roomId);
+  assert.equal("seekDelta" in room.streamPlayback, false);
+
+  const clockEvents = (emittedEvents.get(roomId) || []).filter(
+    (event) => event.event === "stream:clock"
+  );
+  assert.equal(clockEvents.at(-1).data.seekDelta, -5);
+
+  // Late joiners rebuild from room state, where the cue must not exist.
+  const serialized = serializeRoom(room);
+  assert.equal("seekDelta" in serialized.streamPlayback, false);
+});
+
 test("backend: changing the stream source keeps the clock sequence monotonic", () => {
   const { createSocket } = createMockEnvironment();
   const roomId = "room-stream-source-change-test";

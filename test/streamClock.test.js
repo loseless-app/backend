@@ -6,6 +6,7 @@ import {
   clampStreamPosition,
   computeStreamPosition,
   sanitizeStreamClockPayload,
+  sanitizeSeekDelta,
   serializeStreamPlayback,
 } from "../src/utils/streamClock.js";
 
@@ -83,5 +84,41 @@ test("streamClock: serialization exposes a ready-to-use position", () => {
   assert.equal(serialized.seq, 7);
   assert.equal(serialized.state, STREAM_PLAYBACK_STATES.PLAYING);
   assert.equal(serialized.updatedAt, now);
+  assert.equal("seekDelta" in serialized, false);
   assert.equal(serializeStreamPlayback({ streamPlayback: null }, now), null);
+});
+
+test("streamClock: seek cues are sanitized and only serialized when present", () => {
+  const clock = sanitizeStreamClockPayload({
+    isPlaying: false,
+    anchorTime: 20,
+    state: STREAM_PLAYBACK_STATES.PAUSED,
+    seekDelta: -5,
+  });
+  assert.equal(clock.seekDelta, -5);
+
+  const cleared = sanitizeStreamClockPayload({
+    isPlaying: true,
+    anchorTime: 20,
+    state: STREAM_PLAYBACK_STATES.PLAYING,
+    seekDelta: 0,
+  });
+  assert.equal("seekDelta" in cleared, false);
+  assert.equal(sanitizeSeekDelta(Number.NaN), null);
+  assert.equal(sanitizeSeekDelta(10_000), 600);
+
+  const room = {
+    streamMetadata: { duration: 200 },
+    streamPlayback: {
+      isPlaying: false,
+      anchorTime: 20,
+      lastStartedAt: 3_000,
+      state: STREAM_PLAYBACK_STATES.PAUSED,
+      seq: 8,
+    },
+  };
+
+  const withCue = serializeStreamPlayback(room, 5_000, { seekDelta: 5 });
+  assert.equal(withCue.seekDelta, 5);
+  assert.equal("seekDelta" in serializeStreamPlayback(room, 5_000), false);
 });

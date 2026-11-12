@@ -827,7 +827,10 @@ export function registerSyncHandlers(io, socket) {
       room.streamMetadata = { ...room.streamMetadata, duration: clock.duration };
     }
 
-    io.to(roomId).emit("stream:clock", serializeStreamPlayback(room, now));
+    io.to(roomId).emit(
+      "stream:clock",
+      serializeStreamPlayback(room, now, { seekDelta: clock.seekDelta ?? null })
+    );
   });
 
   // Allows stream broadcaster or host to stop the active live stream
