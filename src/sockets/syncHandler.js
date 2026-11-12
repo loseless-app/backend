@@ -9,6 +9,11 @@ import {
 } from "../stores/roomStore.js";
 import crypto from "node:crypto";
 import { parseMediaUrl } from "../utils/urlParser.js";
+import {
+  serializeStreamPlayback,
+  sanitizeStreamClockPayload,
+  STREAM_PLAYBACK_STATES,
+} from "../utils/streamClock.js";
 import { saveMessage, getRecentMessages } from "../stores/chatStore.js";
 
 // Tracks disconnect grace periods: Key = `${roomId}:${sessionId || username}`, Value = { timer, socketId, roomId, username, sessionId }
@@ -429,6 +434,7 @@ export function registerSyncHandlers(io, socket) {
             embedUrl: null,
             mediaMetadata: augmentedMetadata,
             streamMetadata: null,
+            streamPlayback: null,
             mediaOwnerSocketId: ownerSocketId,
             mediaOwnerUsername: ownerUsername,
             isPlaying: false,
@@ -438,6 +444,11 @@ export function registerSyncHandlers(io, socket) {
             bufferingUser: null,
           };
         } else if (mediaType === "stream") {
+          const requestedDuration = Number(mediaMetadata?.duration);
+          const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
+            ? requestedDuration
+            : null;
+
           stateUpdates = {
             mediaType: "stream",
             mediaUrl: null,
@@ -450,6 +461,18 @@ export function registerSyncHandlers(io, socket) {
               source: mediaMetadata?.source || "file",
               hasAudio: Boolean(mediaMetadata?.hasAudio),
               qualityMode: mediaMetadata?.qualityMode || "auto",
+              duration,
+            },
+            streamPlayback: {
+              isPlaying: true,
+              anchorTime: 0,
+              lastStartedAt: now,
+              state: STREAM_PLAYBACK_STATES.PLAYING,
+              // Keep the sequence monotonic across source changes. A new stream
+              // after a full stop starts over at 0 because playback was cleared.
+              seq: room.streamPlayback
+                ? (Number(room.streamPlayback.seq) || 0) + 1
+                : 0,
             },
             mediaOwnerSocketId: ownerSocketId,
             mediaOwnerUsername: ownerUsername,
@@ -469,6 +492,7 @@ export function registerSyncHandlers(io, socket) {
             embedUrl: parsed.embedUrl,
             mediaMetadata: null, // Reset file metadata when switching to URL mode
             streamMetadata: null, // Reset stream metadata when switching to URL mode
+            streamPlayback: null,
             mediaOwnerSocketId: ownerSocketId,
             mediaOwnerUsername: ownerUsername,
             isPlaying: false,
@@ -751,6 +775,61 @@ export function registerSyncHandlers(io, socket) {
     });
   });
 
+  // Viewers may request play/pause. The host applies the command and is the
+  // only writer of the shared timeline, so seeking stays host-only.
+  socket.on("stream:control", (payload) => {
+    const roomId = socket.data?.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || room.mediaType !== "stream" || !room.members.has(socket.id)) return;
+
+    const action = payload?.action;
+    if (action !== "play" && action !== "pause") return;
+
+    const ownerSocketId = room.mediaOwnerSocketId;
+    // The host controls its own video locally; no relay needed.
+    if (!ownerSocketId || ownerSocketId === socket.id) return;
+
+    io.to(ownerSocketId).emit("stream:control", {
+      from: socket.id,
+      action,
+      requestId: typeof payload?.requestId === "string" ? payload.requestId : null,
+    });
+  });
+
+  // Host-authoritative clock. Sent only when playback actually changes
+  // (play/pause/seek/buffering), never on a timer.
+  socket.on("stream:clock", (payload) => {
+    const roomId = socket.data?.roomId;
+    if (!roomId) return;
+
+    const room = getRoom(roomId);
+    if (!room || room.mediaType !== "stream" || !room.members.has(socket.id)) return;
+    if (room.mediaOwnerSocketId !== socket.id) return;
+
+    const knownDuration = Number(room.streamMetadata?.duration);
+    const clock = sanitizeStreamClockPayload(payload, {
+      duration: Number.isFinite(knownDuration) && knownDuration > 0 ? knownDuration : null,
+    });
+    if (!clock) return;
+
+    const now = Date.now();
+    room.streamPlayback = {
+      isPlaying: clock.isPlaying,
+      anchorTime: clock.anchorTime,
+      lastStartedAt: now,
+      state: clock.state,
+      seq: (Number(room.streamPlayback?.seq) || 0) + 1,
+    };
+
+    if (clock.duration && room.streamMetadata) {
+      room.streamMetadata = { ...room.streamMetadata, duration: clock.duration };
+    }
+
+    io.to(roomId).emit("stream:clock", serializeStreamPlayback(room, now));
+  });
+
   // Allows stream broadcaster or host to stop the active live stream
   socket.on("stream:stop", () => {
     const roomId = socket.data?.roomId;
@@ -772,6 +851,7 @@ export function registerSyncHandlers(io, socket) {
         embedUrl: null,
         mediaMetadata: null,
         streamMetadata: null,
+        streamPlayback: null,
         mediaOwnerSocketId: null,
         mediaOwnerUsername: null,
         isPlaying: false,
@@ -870,6 +950,7 @@ export function registerSyncHandlers(io, socket) {
           embedUrl: null,
           mediaMetadata: null,
           streamMetadata: null,
+          streamPlayback: null,
           mediaOwnerSocketId: null,
           mediaOwnerUsername: null,
           isPlaying: false,

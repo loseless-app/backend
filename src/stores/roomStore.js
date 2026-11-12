@@ -1,3 +1,5 @@
+import { serializeStreamPlayback } from "../utils/streamClock.js";
+
 // In-memory room store: sub-millisecond RAM lookups for real-time video sync
 const rooms = new Map();
 
@@ -19,7 +21,8 @@ function createRoomState(roomId, mediaType = "url", mediaUrl = "", mediaMetadata
     isBuffering: false,
     bufferingUser: null,
     activeFileOffer: null, // Track currently active file offer in room
-    streamMetadata: null, // Track Mode 3a live stream metadata { title, source, hasAudio, qualityMode }
+    streamMetadata: null, // Track Mode 3a live stream metadata { title, source, hasAudio, qualityMode, duration }
+    streamPlayback: null, // Host-authoritative live playback clock { isPlaying, anchorTime, lastStartedAt, state, seq }
     members: new Map(), // Key = socketId, Value = { socketId, username, isHost }
   };
 }
@@ -212,6 +215,7 @@ export function serializeRoom(room) {
     bufferingUser: room.bufferingUser,
     activeFileOffer: room.activeFileOffer || null,
     streamMetadata: room.streamMetadata || null,
+    streamPlayback: serializeStreamPlayback(room),
     members: Array.from(room.members.values()).map(({ socketId, username, isHost }) => ({
       socketId,
       username,
